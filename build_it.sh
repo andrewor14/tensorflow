@@ -4,7 +4,7 @@
 # run into this issue https://github.com/tensorflow/tensorflow/pull/21202 
 module load anaconda3/5.2.0
 module load openmpi/gcc/3.0.0/64
-module load cudnn/cuda-9.0/7.1.2
+module load cudnn/cuda-9.2/7.3.1
 
 # Configure flags
 export PYTHON_BIN_PATH="/usr/licensed/anaconda3/5.2.0/bin/python"
@@ -14,15 +14,15 @@ export TF_NEED_GCP=1
 export TF_NEED_HDFS=1
 export TF_NEED_AWS=1
 export TF_NEED_KAFKA=1
-export TF_ENABLE_XLA=0
+export TF_ENABLE_XLA=1
 export TF_NEED_GDR=0
 export TF_NEED_VERBS=0
 export TF_NEED_OPENCL_SYCL=0
 export TF_NEED_CUDA=1
-export TF_CUDA_VERSION="9.0"
-export CUDA_TOOLKIT_PATH="/home/andrewor/lib/cuda"
-export TF_CUDNN_VERSION="7.1.2"
-export CUDNN_INSTALL_PATH="/home/andrewor/lib/cudnn"
+export TF_CUDA_VERSION="9.2"
+export CUDA_TOOLKIT_PATH="/home/andrewor/lib/cuda-9.2"
+export TF_CUDNN_VERSION="7.3.1"
+export CUDNN_INSTALL_PATH="/home/andrewor/lib/cudnn-7.3.1"
 export TF_NEED_TENSORRT=0
 export TF_NCCL_VERSION="1.3"
 export TF_CUDA_COMPUTE_CAPABILITIES="3.5,3.7"
