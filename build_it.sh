@@ -39,5 +39,5 @@ export TF_SET_ANDROID_WORKSPACE=0
 
 echo "Done configuring. Now running bazel build."
 
-bazel build -c opt --config=cuda //tensorflow/tools/pip_package:build_pip_package
+time bazel build -c opt --config=cuda //tensorflow/tools/pip_package:build_pip_package
 
