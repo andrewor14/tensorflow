@@ -35,6 +35,7 @@ if [[ "$ENVIRONMENT" == "tigergpu" ]]; then
   export TF_NEED_MPI=1
   export MPI_HOME="/home/andrewor/lib/openmpi"
   export TF_PKG_DIR="/home/andrewor/tensorflow_pkg"
+  export PIP_COMMAND="pip"
   # Note: Do NOT use Anaconda 5.3.0, which uses Python 3.7, otherwise you'll
   # run into this issue https://github.com/tensorflow/tensorflow/pull/21202 
   module load anaconda3/5.2.0
@@ -51,6 +52,7 @@ elif [[ "$ENVIRONMENT" == "visiongpu" ]]; then
   export TF_NEED_MPI=0
   export TF_PKG_DIR="/home/andrewor/workspace/tensorflow_pkg"
   export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$CUDA_TOOLKIT_PATH/lib64:$CUDNN_INSTALL_PATH/lib64"
+  export PIP_COMMAND="pip"
 elif [[ "$ENVIRONMENT" == "ns" ]]; then
   export PYTHON_BIN_PATH="/usr/bin/python"
   export PYTHON_LIB_PATH="/usr/lib/python2.7/site-packages"
@@ -58,6 +60,18 @@ elif [[ "$ENVIRONMENT" == "ns" ]]; then
   export TF_NEED_MPI=1
   export MPI_HOME="/home/andrewor/lib/openmpi"
   export TF_PKG_DIR="/home/andrewor/tensorflow_pkg"
+  export PIP_COMMAND="pip"
+elif [[ "$ENVIRONMENT" == "snsgpu" ]]; then
+  export PYTHON_BIN_PATH="/usr/bin/python3"
+  export PYTHON_LIB_PATH="/usr/lib/python3/dist-packages"
+  export TF_NEED_CUDA=1
+  export TF_CUDA_VERSION="9.2"
+  export CUDA_TOOLKIT_PATH="/usr/local/cuda"
+  export TF_CUDNN_VERSION="7.5.1"
+  export CUDNN_INSTALL_PATH="/usr/local/cudnn"
+  export TF_NEED_MPI=0
+  export TF_PKG_DIR="/home/andrew/Documents/dev/tensorflow_pkg"
+  export PIP_COMMAND="pip3"
 else
   echo "ERROR: Unknown environment '$ENVIRONMENT'"
   exit 1
