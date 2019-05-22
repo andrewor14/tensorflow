@@ -69,6 +69,7 @@ void GrpcEagerServiceImpl::HandleRPCsLoop() {
       break;
     }
   }
+  LOG(INFO) << "GrpcEagerService exiting from RPC loop.";
 }
 
 void GrpcEagerServiceImpl::Shutdown() {
