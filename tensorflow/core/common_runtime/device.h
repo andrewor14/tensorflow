@@ -31,6 +31,7 @@ limitations under the License.
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 #include "tensorflow/core/framework/allocator.h"
 #include "tensorflow/core/framework/control_flow.h"
@@ -57,6 +58,8 @@ class Device : public DeviceBase {
  public:
   Device(Env* env, const DeviceAttributes& device_attributes);
   ~Device() override;
+
+  static std::unordered_map<string, long> incarnation_map;
 
   // Full name of this device (see top comment).
   const string& name() const override { return device_attributes_.name(); }

@@ -15,6 +15,9 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/device.h"
 
+#include <unordered_map>
+
+#include "tensorflow/core/common_runtime/device_mgr.h"
 #include "tensorflow/core/framework/op_segment.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/random/random.h"
@@ -22,6 +25,8 @@ limitations under the License.
 #include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
+
+std::unordered_map<string, long> Device::incarnation_map = {};
 
 Device::Device(Env* env, const DeviceAttributes& device_attributes)
     : DeviceBase(env), device_attributes_(device_attributes) {
@@ -42,9 +47,20 @@ DeviceAttributes Device::BuildDeviceAttributes(
     const DeviceLocality& locality, const string& physical_device_desc) {
   DeviceAttributes da;
   da.set_name(name);
-  do {
-    da.set_incarnation(random::New64());
-  } while (da.incarnation() == 0);  // This proto field must not be zero
+  //do {
+  //  da.set_incarnation(random::New64());
+  //} while (da.incarnation() == 0);  // This proto field must not be zero
+  LOG(INFO) << "I am building device attributes for " << name;
+  if (Device::incarnation_map.find(name) == Device::incarnation_map.end()) {
+    LOG(INFO) << "FIRST TIME SEEING " << name;
+    do {
+      Device::incarnation_map[name] = random::New64();
+    } while (Device::incarnation_map[name] == 0);  // This proto field must not be zero
+  } else {
+    LOG(INFO) << "SECOND TIME SEEING " << name << ", just using old value " << Device::incarnation_map[name];
+  }
+  da.set_incarnation(Device::incarnation_map[name]);
+  LOG(INFO) << "BUILDING DEVICE " << name << "... incarnation = " << da.incarnation();
   da.set_device_type(device.type());
   da.set_memory_limit(memory_limit.value());
   *da.mutable_locality() = locality;

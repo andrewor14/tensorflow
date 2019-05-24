@@ -97,9 +97,11 @@ GrpcServer::~GrpcServer() {
   // OpKernels, which are also held in their respective devices'
   // OpSegments.)
   if (worker_env_.session_mgr != nullptr) {
+    LOG(INFO) << "GRPC destructor 1";
     delete worker_env_.session_mgr;  // Deletes graph_mgr's.
   } else {
     // Note: session_mgr's legacy_session_ deletes device_mgr now.
+    LOG(INFO) << "GRPC destructor 2";
     delete worker_env_.device_mgr;
   }
 
@@ -160,6 +162,9 @@ Status GrpcServer::Init(
                                                &master_env_.local_devices));
   worker_env_.local_devices = master_env_.local_devices;
   worker_env_.device_mgr = new DeviceMgr(worker_env_.local_devices);
+
+  LOG(INFO) << "HEY GUYS I'M PRINTING THE DEVICES\n" << worker_env_.device_mgr->DeviceMappingString();
+
   worker_env_.rendezvous_mgr = rendezvous_mgr_func == nullptr
                                    ? new RpcRendezvousMgr(&worker_env_)
                                    : rendezvous_mgr_func(&worker_env_);

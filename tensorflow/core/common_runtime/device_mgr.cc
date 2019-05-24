@@ -83,13 +83,14 @@ string DeviceMgr::DeviceMappingString() const {
   for (Device* dev : devices_) {
     if (!dev->attributes().physical_device_desc().empty()) {
       strings::StrAppend(&out, dev->name(), " -> ",
-                         dev->attributes().physical_device_desc(), "\n");
+                         dev->attributes().physical_device_desc(), ", incarnation = ", dev->attributes().incarnation(), "\n");
     }
   }
   return out;
 }
 
 Status DeviceMgr::LookupDevice(StringPiece name, Device** device) const {
+  LOG(INFO) << "LOOKING UP DEVICE " << name << ", from this map\n" << DeviceMappingString();
   Status s;
   auto iter = device_map_.find(name);
   if (iter == device_map_.end()) {
