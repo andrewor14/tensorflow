@@ -210,6 +210,8 @@ void RpcRemoteRendezvous::RecvFromRemoteAsync(
   CHECK(is_initialized());
   Status s;
 
+  LOG(INFO) << "RpcRemoteRendezvous RecvFromRemoteAsync key = " << parsed.FullKey() << ";" << parsed.src_incarnation;
+
   // Prepare a RecvTensor call that can handle being aborted.
   RpcRecvTensorCall* call = get_call_freelist()->New();
 

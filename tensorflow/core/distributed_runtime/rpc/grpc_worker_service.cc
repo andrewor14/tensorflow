@@ -448,6 +448,7 @@ void GrpcWorker::GrpcRecvTensorAsync(CallOptions* opts,
   TRACEPRINTF("RecvTensor: %lld %s", step_id, key.c_str());
   Rendezvous::ParsedKey parsed;
   s = Rendezvous::ParseKey(key, &parsed);
+  LOG(INFO) << "GrpcWorker GrpcRecvTensorAsync received key = " << parsed.FullKey() << ";" << parsed.src_incarnation;
   Device* src_dev = nullptr;
   if (s.ok()) {
     s = PrepareRecvTensor(parsed, &src_dev);

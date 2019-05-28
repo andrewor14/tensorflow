@@ -69,14 +69,14 @@ struct WorkerSession {
 
   ~WorkerSession();
 
+  const std::unique_ptr<DeviceMgr> device_mgr_;
+  DeviceMgr* const borrowed_device_mgr_;  // Not owned.
+
  private:
   WorkerSession(const string& session_name, const string& worker_name,
                 std::unique_ptr<WorkerCacheInterface> worker_cache,
                 DeviceMgr* borrowed_device_mgr,
                 std::unique_ptr<GraphMgr> graph_mgr);
-
-  const std::unique_ptr<DeviceMgr> device_mgr_;
-  DeviceMgr* const borrowed_device_mgr_;  // Not owned.
 };
 
 }  // namespace tensorflow

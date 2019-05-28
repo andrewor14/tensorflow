@@ -41,7 +41,20 @@ SessionMgr::SessionMgr(
           worker_env->device_mgr,
           std::unique_ptr<GraphMgr>(
               new GraphMgr(worker_env, worker_env->device_mgr)))),
-      worker_cache_factory_(std::move(worker_cache_factory)) {}
+      worker_cache_factory_(std::move(worker_cache_factory)) {
+
+   if (legacy_session_.get()->device_mgr_) {
+     LOG(INFO) << "SessionMgr legacy_session device_mgr_\n" << legacy_session_.get()->device_mgr_.get()->DeviceMappingString();
+   } else {
+     LOG(INFO) << "SessionMgr legacy_session device_mgr_ is NULL!";
+   }
+   
+   if (legacy_session_.get()->borrowed_device_mgr_) {
+     LOG(INFO) << "SessionMgr legacy_session borrowed_device_mgr_\n" << legacy_session_.get()->borrowed_device_mgr_->DeviceMappingString();
+   } else {
+     LOG(INFO) << "SessionMgr legacy_session borrowed_device_mgr_ is NULL!";
+   }
+}
 
 /* static */
 string SessionMgr::WorkerNameFromServerDef(const ServerDef& server_def) {

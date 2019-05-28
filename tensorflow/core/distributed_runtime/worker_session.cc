@@ -104,7 +104,20 @@ WorkerSession::WorkerSession(const string& session_name,
       cluster_flr(
           new ClusterFunctionLibraryRuntime(this, !session_name.empty())),
       device_mgr_(std::move(device_mgr)),
-      borrowed_device_mgr_(nullptr) {}
+      borrowed_device_mgr_(nullptr) {
+
+  if (device_mgr_) {
+    LOG(INFO) << "WorkerSession device_mgr_\n" << device_mgr_.get()->DeviceMappingString();
+  } else {
+    LOG(INFO) << "WorkerSession device_mgr_ is NULL!";
+  }
+
+  if (borrowed_device_mgr_) {
+    LOG(INFO) << "WorkerSession borrowed_device_mgr_\n" << borrowed_device_mgr_->DeviceMappingString();
+  } else {
+    LOG(INFO) << "WorkerSession borrowed_device_mgr_ is NULL!";
+  }
+}
 
 /* static */
 std::shared_ptr<WorkerSession> WorkerSession::CreateWithBorrowedDeviceMgr(

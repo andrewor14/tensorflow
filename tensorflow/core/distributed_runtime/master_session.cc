@@ -379,6 +379,7 @@ void MasterSession::ReffedClientGraph::TrackFeedsAndFetches(
         TF_CHECK_OK(
             GetNodeAttr(ndef, "send_device_incarnation",
                         reinterpret_cast<int64*>(&send_device_incarnation)));
+        LOG(INFO) << "Master session just created key";
         const string& key =
             Rendezvous::CreateKey(send_device, send_device_incarnation,
                                   recv_device, name, FrameAndIter(0, 0));

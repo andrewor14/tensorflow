@@ -21,6 +21,7 @@ limitations under the License.
 #include "grpcpp/grpcpp.h"
 #include "grpcpp/security/credentials.h"
 
+#include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/process_util.h"
 #include "tensorflow/core/common_runtime/stats_publisher_interface.h"
 #include "tensorflow/core/distributed_runtime/master_env.h"
@@ -64,6 +65,8 @@ class GrpcServer : public ServerInterface {
   virtual void MaybeMutateBuilder(::grpc::ServerBuilder* builder) {}
 
  public:
+  static DeviceMgr* device_mgr;
+
   static Status Create(const ServerDef& server_def, Env* env,
                        std::unique_ptr<ServerInterface>* out_server);
   static Status Create(const ServerDef& server_def, Env* env,

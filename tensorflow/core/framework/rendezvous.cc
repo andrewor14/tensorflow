@@ -52,6 +52,14 @@ Rendezvous::ParsedKey& Rendezvous::ParsedKey::operator=(const ParsedKey& b) {
 string Rendezvous::CreateKey(const string& src_device, uint64 src_incarnation,
                              const string& dst_device, const string& name,
                              const FrameAndIter& frame_iter) {
+  if (src_incarnation != 1) {
+    LOG(INFO) << "RENDEZVOUS CreateKey:\n" <<\
+      "    src_device = " << src_device << "\n" <<\
+      "    src_incarnation = " << src_incarnation << "\n" <<\
+      "    dst_device = " << dst_device << "\n" <<\
+      "    name = " << name << "\n" <<\
+      "    frame_id, iter_d = " << frame_iter.frame_id << ", " << frame_iter.iter_id;
+  }
   // NOTE: ';' is not used in the device name's job name.
   //
   // We include both sender and receiver in the key to facilitate
@@ -116,6 +124,7 @@ Rendezvous::~Rendezvous() {}
 
 Status Rendezvous::Recv(const ParsedKey& key, const Args& recv_args,
                         Tensor* val, bool* is_dead, int64 timeout_ms) {
+  LOG(INFO) << "Rendezvous Recv key = " << key.FullKey() << ";" << key.src_incarnation << " with timeout = " << timeout_ms << "ms";
   Status ret;
   Notification n;
   RecvAsync(key, recv_args,
@@ -142,7 +151,7 @@ Status Rendezvous::Recv(const ParsedKey& key, const Args& recv_args,
 
 Status Rendezvous::Recv(const ParsedKey& key, const Args& args, Tensor* val,
                         bool* is_dead) {
-  const int64 no_timeout = 0;
+  const int64 no_timeout = 10000;
   return Recv(key, args, val, is_dead, no_timeout);
 }
 

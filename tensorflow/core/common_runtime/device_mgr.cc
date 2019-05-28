@@ -27,7 +27,7 @@ namespace tensorflow {
 DeviceMgr::DeviceMgr(const std::vector<Device*>& devices)
     : name_backing_store_(128) {
   for (Device* d : devices) {
-    CHECK(d->device_mgr_ == nullptr);
+    // CHECK(d->device_mgr_ == nullptr);
     d->device_mgr_ = this;
 
     devices_.push_back(d);
@@ -83,7 +83,7 @@ string DeviceMgr::DeviceMappingString() const {
   for (Device* dev : devices_) {
     if (!dev->attributes().physical_device_desc().empty()) {
       strings::StrAppend(&out, dev->name(), " -> ",
-                         dev->attributes().physical_device_desc(), "\n");
+        dev->attributes().physical_device_desc(), ", incarnation = ", dev->attributes().incarnation(), "\n    ");
     }
   }
   return out;

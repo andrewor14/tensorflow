@@ -24,6 +24,7 @@ limitations under the License.
 #include "grpcpp/security/credentials.h"
 #include "grpcpp/server_builder.h"
 
+#include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/device_factory.h"
 #include "tensorflow/core/common_runtime/device_mgr.h"
 #include "tensorflow/core/common_runtime/process_util.h"
@@ -73,6 +74,8 @@ RendezvousMgrInterface* NewRpcRendezvousMgr(const WorkerEnv* env) {
 }
 
 }  // namespace
+
+DeviceMgr* GrpcServer::device_mgr = nullptr;
 
 GrpcServer::GrpcServer(const ServerDef& server_def, Env* env)
     : server_def_(server_def), env_(env), state_(NEW) {}
@@ -156,10 +159,18 @@ Status GrpcServer::Init(
   string name_prefix =
       strings::StrCat("/job:", server_def_.job_name(), "/replica:0",
                       "/task:", server_def_.task_index());
-  TF_RETURN_IF_ERROR(DeviceFactory::AddDevices(sess_opts, name_prefix,
-                                               &master_env_.local_devices));
+  //if (GrpcServer::device_mgr == nullptr) {
+  if (true) {
+    std::vector<Device*> them_devices;
+    TF_RETURN_IF_ERROR(DeviceFactory::AddDevices(sess_opts, name_prefix, &them_devices));
+    GrpcServer::device_mgr = new DeviceMgr(them_devices);
+  }
+  master_env_.local_devices = GrpcServer::device_mgr->ListDevices();
   worker_env_.local_devices = master_env_.local_devices;
-  worker_env_.device_mgr = new DeviceMgr(worker_env_.local_devices);
+  worker_env_.device_mgr = GrpcServer::device_mgr;
+
+  LOG(INFO) << "GrpcServer::Init, local devices = \n" << worker_env_.device_mgr->DeviceMappingString();
+
   worker_env_.rendezvous_mgr = rendezvous_mgr_func == nullptr
                                    ? new RpcRendezvousMgr(&worker_env_)
                                    : rendezvous_mgr_func(&worker_env_);

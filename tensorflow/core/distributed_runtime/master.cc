@@ -70,6 +70,15 @@ Master::Master(MasterEnv* env, double session_gc_seconds)
   // Otherwise, fetches do not work.
   CHECK(!env->local_devices.empty());
 
+  string out;
+  for (Device* dev : env->local_devices) {
+    if (!dev->attributes().physical_device_desc().empty()) {
+      strings::StrAppend(&out, dev->name(), " -> ",
+        dev->attributes().physical_device_desc(), ", incarnation = ", dev->attributes().incarnation(), "\n    ");
+    }
+  }
+  LOG(INFO) << "Master devices\n" << out;
+
   if (session_gc_seconds_ > 0.0) {
     gc_thread_ = env_->env->StartThread(ThreadOptions(), "TF_master_GC",
                                         [this]() { GC(); });
@@ -138,6 +147,20 @@ class DeviceFinder {
     DeviceFinder finder(device_filters, env, worker_cache);
     finder.Start();
     TF_RETURN_IF_ERROR(finder.Wait());
+    std::vector<string> workers;
+    worker_cache->ListWorkers(&workers);
+    LOG(INFO) << "DeviceFinder GetRemoteDevices listing workers:";
+    for (string s : workers) {
+      LOG(INFO) << "    " << s;
+    }
+    LOG(INFO) << "DeviceFinder GetRemoteDevices listing local_devices:";
+    string out;
+    for (Device* dev : env->local_devices) {
+      if (!dev->attributes().physical_device_desc().empty()) {
+        strings::StrAppend(&out, dev->name(), " -> ",
+          dev->attributes().physical_device_desc(), ", incarnation = ", dev->attributes().incarnation(), "\n    ");
+      }
+    }
     finder.GetRemoteDevices(env->local_devices, out_remote);
     return Status::OK();
   }
@@ -374,6 +397,8 @@ void Master::CreateSession(const CreateSessionRequest* req,
         new std::vector<std::unique_ptr<Device>>());
 
     if (req->config().has_cluster_def()) {
+      LOG(INFO) << "Master CreateSession if case";
+
       worker_cache_factory_options.cluster_def = &req->config().cluster_def();
 
       // Set the server_def's job_name and task_index fields.
@@ -436,6 +461,7 @@ void Master::CreateSession(const CreateSessionRequest* req,
         }
       }
     } else {
+      LOG(INFO) << "Master CreateSession else case";
       worker_cache = env_->worker_cache;
       // Ping all the workers and build the list of devices that the
       // session will use.
@@ -467,6 +493,16 @@ void Master::CreateSession(const CreateSessionRequest* req,
     std::vector<string> filtered_worker_list;
     DeviceFinder::GetRemoteWorkers(req->config().device_filters(), env_,
                                    worker_cache, &filtered_worker_list);
+
+    string out;
+    for (auto&& d : *remote_devices) {
+      if (!d.get()->attributes().physical_device_desc().empty()) {
+        strings::StrAppend(&out, d.get()->name(), " -> ",
+          d.get()->attributes().physical_device_desc(), ", incarnation = ", d.get()->attributes().incarnation(), "\n    ");
+      }
+    }
+    LOG(INFO) << "Master CreateSession remote_devices\n" << out;
+    LOG(INFO) << "Master CreateSession device_set\n" << device_set.get()->DeviceMappingString();
 
     MasterSession* session = env_->master_session_factory(
         options, env_, std::move(remote_devices), std::move(worker_cache_ptr),

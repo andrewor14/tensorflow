@@ -98,6 +98,7 @@ Status ProcessFunctionLibraryRuntime::SendTensors(
   std::vector<string> keys;
   for (int i = 0; i < tensors_to_send.size(); ++i) {
     string name = strings::StrCat(key_prefix, i);
+    LOG(INFO) << "ProcessFunctionLibraryRuntime::SendTensors creating key";
     string key = Rendezvous::CreateKey(source_device, src_incarnation,
                                        target_device, name, FrameAndIter(0, 0));
     keys.push_back(key);
@@ -117,6 +118,7 @@ void ProcessFunctionLibraryRuntime::ReceiveTensorsAsync(
   std::vector<string> keys;
   for (int64 i = 0; i < num_tensors; ++i) {
     string name = strings::StrCat(key_prefix, i);
+    LOG(INFO) << "ProcessFunctionLibraryRuntime::ReceiveTensorsAsync creating key";
     string key = Rendezvous::CreateKey(source_device, src_incarnation,
                                        target_device, name, FrameAndIter(0, 0));
     keys.push_back(key);

@@ -60,6 +60,8 @@ class DeviceSet {
   // not found.
   Device* FindDeviceByName(const string& fullname) const;
 
+  string DeviceMappingString() const;
+
   // Return the list of unique device types in this set, ordered
   // with more preferable devices earlier.
   std::vector<DeviceType> PrioritizedDeviceTypeList() const;

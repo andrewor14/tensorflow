@@ -50,6 +50,18 @@ void DeviceSet::FindMatchingDevices(const DeviceNameUtils::ParsedName& spec,
   }
 }
 
+string DeviceSet::DeviceMappingString() const {
+  string out;
+  for (Device* dev : devices_) {
+    if (!dev->attributes().physical_device_desc().empty()) {
+      strings::StrAppend(&out, dev->name(), " -> ",
+        dev->attributes().physical_device_desc(), ", incarnation = ", dev->attributes().incarnation(), "\n    ");
+    }
+  }
+  return out;
+}
+
+
 Device* DeviceSet::FindDeviceByName(const string& name) const {
   return gtl::FindPtrOrNull(device_by_name_, name);
 }

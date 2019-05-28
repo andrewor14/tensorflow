@@ -60,6 +60,9 @@ GraphMgr::GraphMgr(const WorkerEnv* worker_env, DeviceMgr* device_mgr)
   if (!status.ok()) {
     LOG(ERROR) << status.error_message();
   }
+
+  LOG(INFO) << "GraphMgr devices\n" << device_mgr->DeviceMappingString();
+
 }
 
 GraphMgr::~GraphMgr() {
