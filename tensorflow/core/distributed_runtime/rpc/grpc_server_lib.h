@@ -76,6 +76,8 @@ class GrpcServer : public ServerInterface {
   // shutdown is not currently implemented for this server type.
   virtual ~GrpcServer();
 
+  void Shutdown();
+
   // Implementations of ServerInterface methods.
   Status Start() override;
   Status Stop() override;

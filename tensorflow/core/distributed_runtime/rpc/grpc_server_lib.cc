@@ -76,6 +76,8 @@ RendezvousMgrInterface* NewRpcRendezvousMgr(const WorkerEnv* env) {
 }  // namespace
 
 DeviceMgr* GrpcServer::device_mgr = nullptr;
+static const struct MasterEnv empty_master_env;
+static const struct WorkerEnv empty_worker_env;
 
 GrpcServer::GrpcServer(const ServerDef& server_def, Env* env)
     : server_def_(server_def), env_(env), state_(NEW) {}
@@ -83,7 +85,10 @@ GrpcServer::GrpcServer(const ServerDef& server_def, Env* env)
 GrpcServer::~GrpcServer() {
   TF_CHECK_OK(Stop());
   TF_CHECK_OK(Join());
+  Shutdown();
+}
 
+void GrpcServer::Shutdown() {
   delete master_service_;
   delete worker_service_;
   delete eager_service_;
@@ -120,6 +125,10 @@ Status GrpcServer::Init(
     const StatsPublisherFactory& stats_factory) {
   mutex_lock l(mu_);
   CHECK_EQ(state_, NEW);
+
+  master_env_ = empty_master_env;
+  worker_env_ = empty_worker_env;
+
   master_env_.env = env_;
   worker_env_.env = env_;
 
@@ -170,6 +179,24 @@ Status GrpcServer::Init(
   worker_env_.device_mgr = GrpcServer::device_mgr;
 
   LOG(INFO) << "GrpcServer::Init, local devices = \n" << worker_env_.device_mgr->DeviceMappingString();
+
+  string out;
+  for (Device* dev : worker_env_.local_devices) {
+    if (!dev->attributes().physical_device_desc().empty()) {
+      strings::StrAppend(&out, dev->name(), " -> ",
+        dev->attributes().physical_device_desc(), ", incarnation = ", dev->attributes().incarnation(), "\n    ");
+    }
+  }
+  LOG(INFO) << "GrpcServer::Init, worker env devices:\n    " << out;
+
+  string out2;
+  for (Device* dev : master_env_.local_devices) {
+    if (!dev->attributes().physical_device_desc().empty()) {
+      strings::StrAppend(&out2, dev->name(), " -> ",
+        dev->attributes().physical_device_desc(), ", incarnation = ", dev->attributes().incarnation(), "\n    ");
+    }
+  }
+  LOG(INFO) << "GrpcServer::Init, master env devices:\n    " << out2;
 
   worker_env_.rendezvous_mgr = rendezvous_mgr_func == nullptr
                                    ? new RpcRendezvousMgr(&worker_env_)
@@ -381,13 +408,13 @@ Status GrpcServer::Start() {
     case NEW: {
       master_thread_.reset(
           env_->StartThread(ThreadOptions(), "TF_master_service",
-                            [this] { master_service_->HandleRPCsLoop(); }));
+                            [this] { master_service_->HandleRPCsLoop(); LOG(INFO) << "End master thread"; }));
       worker_thread_.reset(
           env_->StartThread(ThreadOptions(), "TF_worker_service",
-                            [this] { worker_service_->HandleRPCsLoop(); }));
+                            [this] { worker_service_->HandleRPCsLoop(); LOG(INFO) << "End worker thread"; }));
       eager_thread_.reset(
           env_->StartThread(ThreadOptions(), "TF_eager_service",
-                            [this] { eager_service_->HandleRPCsLoop(); }));
+                            [this] { eager_service_->HandleRPCsLoop(); LOG(INFO) << "End eager thread"; }));
       state_ = STARTED;
       LOG(INFO) << "Started server with target: " << target();
       return Status::OK();
@@ -414,6 +441,10 @@ Status GrpcServer::Stop() {
       master_service_->Shutdown();
       eager_service_->Shutdown();
       state_ = STOPPED;
+      // Do not call Shutdown() here, seg faults
+      //Shutdown();
+      // Do not call Join() here either, hangs
+      Join();
       return Status::OK();
     case STOPPED:
       LOG(INFO) << "Server already stopped (target: " << target() << ")";

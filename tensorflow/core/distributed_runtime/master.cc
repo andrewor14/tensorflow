@@ -377,6 +377,16 @@ class DeviceFinder {
 void Master::CreateSession(const CreateSessionRequest* req,
                            CreateSessionResponse* resp, MyClosure done) {
   SchedClosure([this, req, resp, done]() {
+
+    string outt;
+    for (Device* dev : env_->local_devices) {
+      if (!dev->attributes().physical_device_desc().empty()) {
+        strings::StrAppend(&outt, dev->name(), " -> ",
+          dev->attributes().physical_device_desc(), ", incarnation = ", dev->attributes().incarnation(), "\n    ");
+      }
+    }
+    LOG(INFO) << "Master CreateSession CLOSURE devices\n" << outt;
+
     Status status;
     WorkerCacheFactoryOptions worker_cache_factory_options;
     string grpc_protocol("grpc");
