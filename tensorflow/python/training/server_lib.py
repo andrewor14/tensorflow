@@ -181,6 +181,16 @@ class Server(object):
     with errors.raise_exception_on_not_ok_status() as status:
       pywrap_tensorflow.PyServer_Join(self._server, status)
 
+  def destroy(self):
+    """Destroys this server after stopping it.
+
+    Raises:
+      tf.errors.OpError: Or one of its subclasses if an error occurs while
+        joining the TensorFlow server.
+    """
+    with errors.raise_exception_on_not_ok_status() as status:
+      pywrap_tensorflow.PyServer_Destroy(self._server, status)
+
   @property
   def server_def(self):
     """Returns the `tf.train.ServerDef` for this server.

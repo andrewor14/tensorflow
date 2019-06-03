@@ -239,4 +239,10 @@ std::unique_ptr<LocalMaster> LocalMaster::Lookup(const string& target) {
   return ret;
 }
 
+/* static */
+void LocalMaster::Clear() {
+  mutex_lock l(*get_local_master_registry_lock());
+  local_master_registry()->clear();
+}
+
 }  // namespace tensorflow

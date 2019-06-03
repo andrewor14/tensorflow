@@ -89,6 +89,12 @@ static void PyServer_Join(
     TF_Status* out_status) {
   tensorflow::Set_TF_Status_from_Status(out_status, in_server->Join());
 }
+
+static void PyServer_Destroy(
+    tensorflow::ServerInterface* in_server,
+    TF_Status* out_status) {
+  tensorflow::Set_TF_Status_from_Status(out_status, in_server->Destroy());
+}
 %}
 
 // Wrap this function.
@@ -100,6 +106,8 @@ void PyServer_Start(tensorflow::ServerInterface* in_server,
 void PyServer_Stop(tensorflow::ServerInterface* in_server,
                    TF_Status* out_status);
 void PyServer_Join(tensorflow::ServerInterface* in_server,
+                   TF_Status* out_status);
+void PyServer_Destroy(tensorflow::ServerInterface* in_server,
                    TF_Status* out_status);
 
 %ignoreall
@@ -114,6 +122,8 @@ void PyServer_Join(tensorflow::ServerInterface* in_server,
 %unignore PyServer_Start;
 %unignore PyServer_Stop;
 %unignore PyServer_Join;
+%unignore PyServer_Destroy;
+
 
 %include "tensorflow/core/distributed_runtime/server_lib.h"
 

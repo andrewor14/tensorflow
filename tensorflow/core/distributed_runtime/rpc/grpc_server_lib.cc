@@ -78,12 +78,20 @@ GrpcServer::GrpcServer(const ServerDef& server_def, Env* env)
     : server_def_(server_def), env_(env), state_(NEW) {}
 
 GrpcServer::~GrpcServer() {
+  Destroy();
+}
+
+Status GrpcServer::Destroy() {
   TF_CHECK_OK(Stop());
   TF_CHECK_OK(Join());
 
   delete master_service_;
   delete worker_service_;
   delete eager_service_;
+
+  // We must destroy all references to Master
+  // Otherwise, future servers won't be bound correctly
+  LocalMaster::Clear();
 
   // TODO(mrry): Refactor the *Env classes so that it is less fiddly
   // to destroy them.
@@ -107,6 +115,7 @@ GrpcServer::~GrpcServer() {
   // - master_env_.env
   // - worker_env_.env
   // - worker_env_.compute_pool
+  return Status::OK();
 }
 
 Status GrpcServer::Init(
