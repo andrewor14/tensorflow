@@ -48,7 +48,16 @@ Status WaitForNotification(CallOptions* call_options,
 
 LocalMaster::LocalMaster(Master* master_impl, const int64 default_timeout_in_ms)
     : master_impl_(master_impl),
-      default_timeout_in_ms_(default_timeout_in_ms) {}
+      default_timeout_in_ms_(default_timeout_in_ms) {
+  string out;
+  for (Device* dev : master_impl->env_->local_devices) {
+    if (!dev->attributes().physical_device_desc().empty()) {
+      strings::StrAppend(&out, dev->name(), " -> ",
+        dev->attributes().physical_device_desc(), ", incarnation = ", dev->attributes().incarnation(), "\n    ");
+    }
+  }
+  LOG(INFO) << "Local master devices\n" << out;
+}
 
 Status LocalMaster::CreateSession(CallOptions* call_options,
                                   const CreateSessionRequest* request,
@@ -237,6 +246,12 @@ std::unique_ptr<LocalMaster> LocalMaster::Lookup(const string& target) {
                               iter->second.default_timeout_in_ms));
   }
   return ret;
+}
+
+/* static */
+void LocalMaster::Clear() {
+  mutex_lock l(*get_local_master_registry_lock());
+  local_master_registry()->clear();
 }
 
 }  // namespace tensorflow

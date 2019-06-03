@@ -253,6 +253,11 @@ class Env {
                               const string& name,
                               std::function<void()> fn) TF_MUST_USE_RESULT = 0;
 
+  virtual Thread* StartThreadWithStopFunction(
+    const string name,
+    std::function<void()> fn,
+    std::function<bool()> stop_fn) TF_MUST_USE_RESULT = 0;
+
   // \brief Schedules the given closure on a thread-pool.
   //
   // NOTE(mrry): This closure may block.

@@ -68,11 +68,11 @@ class Master {
   void ReleaseCallable(const ReleaseCallableRequest* req,
                        ReleaseCallableResponse* resp, MyClosure done);
 
- private:
-  typedef Master ME;
-
   // Not owned.
   MasterEnv* env_ = nullptr;
+
+ private:
+  typedef Master ME;
 
   // Owned.
   mutex mu_;

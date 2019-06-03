@@ -93,6 +93,10 @@ void GrpcServer::Shutdown() {
   delete worker_service_;
   delete eager_service_;
 
+  LOG(INFO) << "GrpcServer Shutdown right before clearing";
+  LocalMaster::Clear();
+  LOG(INFO) << "GrpcServer Shutdown right after clearing";
+
   // TODO(mrry): Refactor the *Env classes so that it is less fiddly
   // to destroy them.
 
@@ -406,15 +410,24 @@ Status GrpcServer::Start() {
   mutex_lock l(mu_);
   switch (state_) {
     case NEW: {
+      auto master_stop_fn = [this] { return master_service_->IsShutDown(); };
+      auto worker_stop_fn = [this] { return worker_service_->IsShutDown(); };
+      auto eager_stop_fn = [this] { return eager_service_->IsShutDown(); };
       master_thread_.reset(
-          env_->StartThread(ThreadOptions(), "TF_master_service",
-                            [this] { master_service_->HandleRPCsLoop(); LOG(INFO) << "End master thread"; }));
+        env_->StartThread(
+          ThreadOptions(),
+          "TF_master_service",
+          [this] { master_service_->HandleRPCsLoop(); LOG(INFO) << "End master thread, is shut down? " << master_service_->IsShutDown(); }));
       worker_thread_.reset(
-          env_->StartThread(ThreadOptions(), "TF_worker_service",
-                            [this] { worker_service_->HandleRPCsLoop(); LOG(INFO) << "End worker thread"; }));
+        env_->StartThread(
+          ThreadOptions(),
+          "TF_worker_service",
+          [this] { worker_service_->HandleRPCsLoop(); LOG(INFO) << "End worker thread, is shut down? " << worker_service_->IsShutDown(); }));
       eager_thread_.reset(
-          env_->StartThread(ThreadOptions(), "TF_eager_service",
-                            [this] { eager_service_->HandleRPCsLoop(); LOG(INFO) << "End eager thread"; }));
+        env_->StartThread(
+          ThreadOptions(),
+          "TF_eager_service",
+          [this] { eager_service_->HandleRPCsLoop(); LOG(INFO) << "End eager thread, is shut down? " << eager_service_->IsShutDown(); }));
       state_ = STARTED;
       LOG(INFO) << "Started server with target: " << target();
       return Status::OK();
@@ -440,11 +453,14 @@ Status GrpcServer::Stop() {
       worker_service_->Shutdown();
       master_service_->Shutdown();
       eager_service_->Shutdown();
+      // Don't call Join() here; we already hold the lock
+      LOG(INFO) << "GrpcServer Stop() right before resetting threads";
+      master_thread_.reset();
+      worker_thread_.reset();
+      eager_thread_.reset();
+      LOG(INFO) << "GrpcServer Stop() right after resetting threads";
+      Shutdown();
       state_ = STOPPED;
-      // Do not call Shutdown() here, seg faults
-      //Shutdown();
-      // Do not call Join() here either, hangs
-      Join();
       return Status::OK();
     case STOPPED:
       LOG(INFO) << "Server already stopped (target: " << target() << ")";

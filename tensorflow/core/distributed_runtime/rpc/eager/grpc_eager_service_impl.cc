@@ -80,5 +80,9 @@ void GrpcEagerServiceImpl::Shutdown() {
       cq_.get(), gpr_now(GPR_CLOCK_MONOTONIC), nullptr);
 }
 
+bool GrpcEagerServiceImpl::IsShutDown() {
+  return shutdown_alarm_ != nullptr;
+}
+
 }  // namespace eager
 }  // namespace tensorflow

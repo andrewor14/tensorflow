@@ -81,6 +81,10 @@ class GrpcWorkerService : public AsyncServiceInterface {
     }
   }
 
+  bool IsShutDown() override {
+    return is_shutdown_;
+  }
+
 // This macro creates a new request for the given RPC method name
 // (e.g., `ENQUEUE_REQUEST(GetStatus, false);`), and enqueues it on
 // `this->cq_`.

@@ -34,6 +34,8 @@ class AsyncServiceInterface {
   // also shut down any servers that might share ownership of this
   // service's resources (e.g. completion queues).
   virtual void Shutdown() = 0;
+
+  virtual bool IsShutDown() = 0;
 };
 
 }  // namespace tensorflow

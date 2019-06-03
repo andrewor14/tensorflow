@@ -41,6 +41,7 @@ class GrpcEagerServiceImpl : public AsyncServiceInterface {
 
   void HandleRPCsLoop() override;
   void Shutdown() override;
+  bool IsShutDown() override;
 
  private:
 #define HANDLER(method)                                                        \

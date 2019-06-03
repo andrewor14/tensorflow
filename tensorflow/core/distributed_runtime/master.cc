@@ -144,16 +144,19 @@ class DeviceFinder {
       const protobuf::RepeatedPtrField<string>& device_filters, MasterEnv* env,
       WorkerCacheInterface* worker_cache,
       std::vector<std::unique_ptr<Device>>* out_remote) {
+    LOG(INFO) << "DeviceFinder GetRemoteDevices 0";
     DeviceFinder finder(device_filters, env, worker_cache);
+    LOG(INFO) << "DeviceFinder GetRemoteDevices 1";
     finder.Start();
+    LOG(INFO) << "DeviceFinder GetRemoteDevices 2";
     TF_RETURN_IF_ERROR(finder.Wait());
+    LOG(INFO) << "DeviceFinder GetRemoteDevices 3";
     std::vector<string> workers;
     worker_cache->ListWorkers(&workers);
     LOG(INFO) << "DeviceFinder GetRemoteDevices listing workers:";
     for (string s : workers) {
       LOG(INFO) << "    " << s;
     }
-    LOG(INFO) << "DeviceFinder GetRemoteDevices listing local_devices:";
     string out;
     for (Device* dev : env->local_devices) {
       if (!dev->attributes().physical_device_desc().empty()) {
@@ -161,6 +164,7 @@ class DeviceFinder {
           dev->attributes().physical_device_desc(), ", incarnation = ", dev->attributes().incarnation(), "\n    ");
       }
     }
+    LOG(INFO) << "DeviceFinder GetRemoteDevices listing local_devices:\n" << out;
     finder.GetRemoteDevices(env->local_devices, out_remote);
     return Status::OK();
   }
@@ -177,6 +181,7 @@ class DeviceFinder {
       const protobuf::RepeatedPtrField<string>& device_filters, MasterEnv* env,
       WorkerCacheInterface* worker_cache)
       : env_(env), worker_cache_(worker_cache) {
+    LOG(INFO) << "DeviceFinder constructor 0";
     CHECK(worker_cache) << "Worker cache was null!";
     auto process_filter = [this](const string& filter) {
       DeviceNameUtils::ParsedName parsed;
@@ -186,25 +191,31 @@ class DeviceFinder {
         LOG(FATAL) << "Skipping invalid filter: " << filter;
       }
     };
+    LOG(INFO) << "DeviceFinder constructor 1";
     for (const string& filter : device_filters) {
       process_filter(filter);
     }
+    LOG(INFO) << "DeviceFinder constructor 2";
     // Enumerates all known workers' target. A target name is a
     // prefix of a device name. E.g., /job:mnist/replica:0/task:10.
     if (filters_.empty()) {
       // If no filters were specified, we list all known workers in
       // `worker_cache`.
+      LOG(INFO) << "DeviceFinder constructor 3a";
       std::vector<string> workers;
       worker_cache->ListWorkers(&workers);
+      LOG(INFO) << "DeviceFinder constructor 3b";
       std::swap(workers, targets_);
     } else {
       // When applying filters, we must include the local worker, even if it
       // does not match any of the filters.
+      LOG(INFO) << "DeviceFinder constructor 4a";
       CHECK_GT(env_->local_devices.size(), 0) << "No local devices provided.";
       const string& local_device_name = env_->local_devices[0]->name();
       DeviceNameUtils::ParsedName local_parsed_name;
       CHECK(DeviceNameUtils::ParseFullName(local_device_name,
                                            &local_parsed_name));
+      LOG(INFO) << "DeviceFinder constructor 4b";
       bool all_filters_have_job = true;
       std::unordered_set<string> filter_job_names({local_parsed_name.job});
       for (const DeviceNameUtils::ParsedName& filter : filters_) {
@@ -214,8 +225,11 @@ class DeviceFinder {
         }
       }
 
+      LOG(INFO) << "DeviceFinder constructor 4c";
+
       std::vector<string> workers;
       if (all_filters_have_job) {
+        LOG(INFO) << "DeviceFinder constructor 5a";
         // If all of the device filters have a job specified, then we only need
         // to list the workers in the jobs named in the filter, because a worker
         // in any other job would not match any filter.
@@ -226,9 +240,11 @@ class DeviceFinder {
           workers.insert(workers.end(), workers_in_job.begin(),
                          workers_in_job.end());
         }
+        LOG(INFO) << "DeviceFinder constructor 5b";
       } else {
         // If any of the device filters does not have a job specified, then we
         // must list the workers from all jobs.
+        LOG(INFO) << "DeviceFinder constructor 6a";
         VLOG(2) << "Listing workers in all jobs because some device "
                 << "filter has no job specified. Filters were:";
         if (device_filters.empty()) {
@@ -238,16 +254,22 @@ class DeviceFinder {
             VLOG(2) << "- " << filter;
           }
         }
+        LOG(INFO) << "DeviceFinder constructor 6b";
         worker_cache->ListWorkers(&workers);
+        LOG(INFO) << "DeviceFinder constructor 6c";
       }
+      LOG(INFO) << "DeviceFinder constructor 7";
       for (const string& name : workers) {
         if (MatchFilters(name) ||
             DeviceNameUtils::IsSameAddressSpace(name, local_device_name)) {
           targets_.push_back(name);
         }
       }
+      LOG(INFO) << "DeviceFinder constructor 8";
     }
+    LOG(INFO) << "DeviceFinder constructor 9";
     seen_targets_.assign(targets_.size(), false);
+    LOG(INFO) << "DeviceFinder constructor 10";
   }
 
   ~DeviceFinder() {
@@ -255,6 +277,7 @@ class DeviceFinder {
   }
 
   void Start() {
+    LOG(INFO) << "DeviceFinder start";
     {
       mutex_lock l(mu_);
       num_pending_ = targets_.size();
@@ -262,6 +285,7 @@ class DeviceFinder {
         pending_zero_.notify_all();
       }
     }
+    LOG(INFO) << "DeviceFinder start 1";
     // Talk to all workers to get the list of available devices.
     using std::placeholders::_1;
     using std::placeholders::_2;
@@ -271,6 +295,7 @@ class DeviceFinder {
       NewRemoteDevices(env_->env, worker_cache_, targets_[i],
                        std::bind(&ME::WhenFound, this, i, _1, _2));
     }
+    LOG(INFO) << "DeviceFinder start 2";
   }
 
   // Every `kLoggingPeriodMs`, while the DeviceFinder is still waiting
@@ -300,9 +325,12 @@ class DeviceFinder {
   // The caller takes the ownership of returned remote devices.
   void GetRemoteDevices(const std::vector<Device*>& local,
                         std::vector<std::unique_ptr<Device>>* remote) {
+    LOG(INFO) << "DeviceFinder GetRemoteDevices 4";
     std::unordered_set<string> names(local.size());
     for (Device* dev : local) names.insert(dev->name());
+    LOG(INFO) << "DeviceFinder GetRemoteDevices 5";
     mutex_lock l(mu_);
+    LOG(INFO) << "DeviceFinder GetRemoteDevices 6";
     for (Device* dev : found_) {
       const string& name = dev->name();
       if (names.insert(name).second && MatchFilters(name)) {
@@ -311,7 +339,9 @@ class DeviceFinder {
         delete dev;
       }
     }
+    LOG(INFO) << "DeviceFinder GetRemoteDevices 7";
     found_.clear();
+    LOG(INFO) << "DeviceFinder GetRemoteDevices 8";
   }
 
   typedef DeviceFinder ME;
@@ -473,17 +503,23 @@ void Master::CreateSession(const CreateSessionRequest* req,
     } else {
       LOG(INFO) << "Master CreateSession else case";
       worker_cache = env_->worker_cache;
+      LOG(INFO) << "Master CreateSession else case 1: right before GetRemoteDevices";
       // Ping all the workers and build the list of devices that the
       // session will use.
       status =
           DeviceFinder::GetRemoteDevices(req->config().device_filters(), env_,
                                          worker_cache, remote_devices.get());
+      LOG(INFO) << "Master CreateSession else case 2: right after GetRemoteDevices";
+
       if (!status.ok()) return;
       device_set.reset(new DeviceSet);
+
+      LOG(INFO) << "Master CreateSession else case 3: right before adding remote devices to device_set";
       for (auto&& d : *remote_devices) {
         device_set->AddDevice(d.get());
       }
       int num_local_devices = 0;
+      LOG(INFO) << "Master CreateSession else case 4: right before adding local devices to device_set";
       for (Device* d : env_->local_devices) {
         device_set->AddDevice(d);
         if (num_local_devices == 0) {
@@ -499,6 +535,9 @@ void Master::CreateSession(const CreateSessionRequest* req,
 
     SessionOptions options;
     options.config = req->config();
+
+    LOG(INFO) << "Master CreateSession: right before GetRemoteWorkers";
+
 
     std::vector<string> filtered_worker_list;
     DeviceFinder::GetRemoteWorkers(req->config().device_filters(), env_,

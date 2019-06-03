@@ -25,6 +25,7 @@ limitations under the License.
 #include <time.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <thread>
 #include <vector>
 
@@ -38,6 +39,32 @@ namespace tensorflow {
 
 namespace {
 
+class MyThread : public Thread {
+ public:
+  static const long STOP_FUNC_WAIT_INTERVAL_MS = 500;
+
+  MyThread(const string name, std::function<void()> fn, std::function<bool()> stop_fn)
+      : name_(name), thread_(fn), stop_fn_(stop_fn) {
+    LOG(INFO) << "Created MyThread " << name_;
+  }
+
+  ~MyThread() override {
+    LOG(INFO) << "THREAD WAITING EVERY " << STOP_FUNC_WAIT_INTERVAL_MS << "MS: " << name_;
+    while (!stop_fn_()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(STOP_FUNC_WAIT_INTERVAL_MS));
+    }
+    LOG(INFO) << "THREAD DONE: " << name_;
+    thread_.detach();
+    LOG(INFO) << "THREAD DETACHED: " << name_;
+  }
+
+ private:
+  const string name_;
+  std::thread thread_;
+  std::function<bool()> stop_fn_;
+};
+
+
 class StdThread : public Thread {
  public:
   // name and thread_options are both ignored.
@@ -45,7 +72,6 @@ class StdThread : public Thread {
             std::function<void()> fn)
       : thread_(fn) {}
   ~StdThread() override { thread_.join(); }
-
  private:
   std::thread thread_;
 };
@@ -84,6 +110,13 @@ class PosixEnv : public Env {
   Thread* StartThread(const ThreadOptions& thread_options, const string& name,
                       std::function<void()> fn) override {
     return new StdThread(thread_options, name, fn);
+  }
+
+  Thread* StartThreadWithStopFunction(
+      const string name,
+      std::function<void()> fn,
+      std::function<bool()> stop_fn) override {
+    return new MyThread(name, fn, stop_fn);
   }
 
   void SchedClosure(std::function<void()> closure) override {
