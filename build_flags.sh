@@ -54,13 +54,13 @@ elif [[ "$ENVIRONMENT" == "visiongpu" ]]; then
   export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$CUDA_TOOLKIT_PATH/lib64:$CUDNN_INSTALL_PATH/lib64"
   export PIP_COMMAND="pip"
 elif [[ "$ENVIRONMENT" == "ns" ]]; then
-  export PYTHON_BIN_PATH="/usr/bin/python"
-  export PYTHON_LIB_PATH="/usr/lib/python2.7/site-packages"
+  export PYTHON_BIN_PATH="/usr/licensed/anaconda3/5.2.0/bin/python3.6"
+  export PYTHON_LIB_PATH="/usr/licensed/anaconda3/5.2.0/lib/python3.6/site-packages"
   export TF_NEED_CUDA=0
   export TF_NEED_MPI=1
   export MPI_HOME="/home/andrewor/lib/openmpi"
   export TF_PKG_DIR="/home/andrewor/tensorflow_pkg"
-  export PIP_COMMAND="pip"
+  export PIP_COMMAND="/usr/licensed/anaconda3/5.2.0/bin/pip"
 elif [[ "$ENVIRONMENT" == "snsgpu" ]]; then
   export PYTHON_BIN_PATH="/usr/bin/python3"
   export PYTHON_LIB_PATH="/usr/lib/python3/dist-packages"
