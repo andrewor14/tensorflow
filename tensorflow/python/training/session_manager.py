@@ -18,6 +18,7 @@ from __future__ import division
 from __future__ import print_function
 
 import time
+import traceback
 import numpy as np
 
 from tensorflow.python.client import session
@@ -96,7 +97,7 @@ class SessionManager(object):
                ready_op=None,
                ready_for_local_init_op=None,
                graph=None,
-               recovery_wait_secs=30,
+               recovery_wait_secs=10,
                local_init_run_options=None):
     """Creates a SessionManager.
 
@@ -293,9 +294,21 @@ class SessionManager(object):
         raise RuntimeError("Model is not initialized and no init_op or "
                            "init_fn or local_init_op was given")
       if init_op is not None:
-        sess.run(init_op, feed_dict=init_feed_dict)
+        try:
+          sess.run(init_op, feed_dict=init_feed_dict)
+        except Exception as e:
+          logging.warning("Error in prepare_session while running init_op: %s (%s)" % \
+                        (e, e.__class__.__name__))
+          traceback.print_exc()
+          raise e
       if init_fn:
-        init_fn(sess)
+        try:
+          init_fn(sess)
+        except Exception as e:
+          logging.warning("Error in prepare_session while running init_fn: %s (%s)" % \
+                          (e, e.__class__.__name__))
+          traceback.print_exc()
+          raise e
 
     local_init_success, msg = self._try_run_local_init_op(sess)
     if not local_init_success:
@@ -415,8 +428,7 @@ class SessionManager(object):
       sess = session.Session(self._target, graph=self._graph, config=config)
       not_ready_msg = None
       not_ready_local_msg = None
-      local_init_success, not_ready_local_msg = self._try_run_local_init_op(
-          sess)
+      local_init_success, not_ready_local_msg = self._try_run_local_init_op(sess)
       if local_init_success:
         # Successful if local_init_op is None, or ready_for_local_init_op passes
         is_ready, not_ready_msg = self._model_ready(sess)
@@ -449,7 +461,9 @@ class SessionManager(object):
     # pylint: disable=broad-except
     try:
       sess.close()
-    except Exception:
+    except Exception as e:
+      logging.warning("Error during _safe_close: %s (%s)" % (e, e.__class__.__name__))
+      traceback.print_exc()
       # Intentionally not logging to avoid user complaints that
       # they get cryptic errors.  We really do not care that Close
       # fails.
@@ -500,7 +514,13 @@ class SessionManager(object):
       is_ready_for_local_init, msg = self._model_ready_for_local_init(sess)
       if is_ready_for_local_init:
         logging.info("Running local_init_op.")
-        sess.run(self._local_init_op, options=self._local_init_run_options)
+        try:
+          sess.run(self._local_init_op, options=self._local_init_run_options)
+        except Exception as e:
+          logging.warning("Error in _try_run_local_init_op while running _local_init_op: %s (%s)" % \
+                          (e, e.__class__.__name__))
+          traceback.print_exc()
+          raise e
         logging.info("Done running local_init_op.")
         return True, None
       else:
@@ -545,6 +565,10 @@ def _ready(op, sess, msg):
         logging.warning("%s : error [%s]", msg, str(e))
         raise e
       return False, str(e)
+    except Exception as e:
+      logging.warning("Error in _ready: %s (%s)" % (e, e.__class__.__name__))
+      traceback.print_exc()
+      raise e
 
 
 class _CountDownTimer(object):
