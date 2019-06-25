@@ -305,7 +305,9 @@ class SessionManager(object):
                                                    init_fn,
                                                    msg))
 
+    logging.info("Checking if model is ready")
     is_ready, msg = self._model_ready(sess)
+    logging.info("Model is %sready" % ("" if is_ready else "not "))
     if not is_ready:
       raise RuntimeError(
           "Init operations did not make model ready.  "

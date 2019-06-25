@@ -721,18 +721,28 @@ class Supervisor(object):
     if self._summary_writer:
       self._summary_writer.reopen()
 
+    disable_write_graph = os.getenv("AUTOSCALING_DISABLE_WRITE_GRAPH")
+    disable_checkpoint_restore = os.getenv("AUTOSCALING_DISABLE_CHECKPOINT_RESTORE")
+    disable_checkpoint_restore =\
+      disable_checkpoint_restore is not None and disable_checkpoint_restore.lower() == "true"
+    checkpoint_dir = None if disable_checkpoint_restore else self._logdir
+
     if self._is_chief:
       sess = self._session_manager.prepare_session(
           master,
           init_op=self.init_op,
           saver=self.saver,
-          checkpoint_dir=self._logdir,
+          checkpoint_dir=checkpoint_dir,
           wait_for_checkpoint=wait_for_checkpoint,
           max_wait_secs=max_wait_secs,
           config=config,
           init_feed_dict=self._init_feed_dict,
           init_fn=self._init_fn)
-      self._write_graph()
+
+      if disable_write_graph is not None and disable_write_graph.lower() != "true":
+        logging.info("Writing graph")
+        self._write_graph()
+        logging.info("Done writing graph!")
       if start_standard_services:
         logging.info("Starting standard services.")
         self.start_standard_services(sess)
