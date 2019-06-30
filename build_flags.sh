@@ -57,8 +57,9 @@ elif [[ "$ENVIRONMENT" == "ns" ]]; then
   export PYTHON_BIN_PATH="/usr/licensed/anaconda3/5.2.0/bin/python3.6"
   export PYTHON_LIB_PATH="/usr/licensed/anaconda3/5.2.0/lib/python3.6/site-packages"
   export TF_NEED_CUDA=0
-  export TF_NEED_MPI=1
-  export MPI_HOME="/home/andrewor/lib/openmpi"
+  export TF_NEED_MPI=0
+  #export TF_NEED_MPI=1
+  #export MPI_HOME="/home/andrewor/lib/openmpi"
   export TF_PKG_DIR="/home/andrewor/tensorflow_pkg"
   export PIP_COMMAND="/usr/licensed/anaconda3/5.2.0/bin/pip"
 elif [[ "$ENVIRONMENT" == "snsgpu" ]]; then
