@@ -53,6 +53,10 @@ class ServerInterface {
   // returns an error.
   virtual Status Join() = 0;
 
+  // Stop the server before destroying it. Returns OK on success, otherwise
+  // returns an error.
+  virtual Status Destroy() = 0;
+
   // Returns a target string that can be used to connect to this server using
   // `tensorflow::NewSession()`.
   virtual const string target() const = 0;

@@ -182,6 +182,15 @@ class Server(object):
     """
     c_api.TF_ServerJoin(self._server)
 
+  def destroy(self):
+    """Destroy this server after stopping it.
+
+    Raises:
+      tf.errors.OpError: Or one of its subclasses if an error occurs while
+        joining the TensorFlow server.
+    """
+    c_api.TF_ServerDestroy(self._server)
+
   @property
   def server_def(self):
     """Returns the `tf.train.ServerDef` for this server.

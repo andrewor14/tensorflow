@@ -90,6 +90,7 @@ class GrpcServer : public ServerInterface {
   Status Start() override;
   Status Stop() override;
   Status Join() override;
+  Status Destroy() override;
   const string target() const override;
 
   WorkerEnv* worker_env() { return &worker_env_; }

@@ -95,6 +95,8 @@ class LocalMaster : public MasterInterface {
   // `target`, or nullptr if none exists.
   static std::unique_ptr<LocalMaster> Lookup(const string& target);
 
+  static void Clear();
+
  private:
   Master* master_impl_;  // Not owned.
   const int64 default_timeout_in_ms_;

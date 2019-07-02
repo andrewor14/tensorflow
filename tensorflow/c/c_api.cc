@@ -2926,6 +2926,15 @@ void TF_ServerJoin(TF_Server* server, TF_Status* status) {
 #endif  // defined(IS_MOBILE_PLATFORM) || defined(IS_SLIM_BUILD)
 }
 
+void TF_ServerDestroy(TF_Server* server, TF_Status* status) {
+#if defined(IS_MOBILE_PLATFORM) || defined(IS_SLIM_BUILD)
+  status->status = tensorflow::errors::Unimplemented(
+      "Server functionality is not supported on mobile");
+#else
+  status->status = server->server->Destroy();
+#endif  // defined(IS_MOBILE_PLATFORM) || defined(IS_SLIM_BUILD)
+}
+
 const char* TF_ServerTarget(TF_Server* server) {
 #if defined(IS_MOBILE_PLATFORM) || defined(IS_SLIM_BUILD)
   return nullptr;
