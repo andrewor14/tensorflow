@@ -280,6 +280,10 @@ def train_and_evaluate(estimator, train_spec, eval_spec, executor_cls):
     # INDEPENDENT_WORKER mode.
     cluster_spec = None
 
+  def _server_fn(server):
+    logging.info('Calling server function on server %s' % server)
+    estimator.server = server
+
   dc.run_distribute_coordinator(
       _worker_fn,
       run_config.train_distribute,
@@ -287,7 +291,8 @@ def train_and_evaluate(estimator, train_spec, eval_spec, executor_cls):
       run_config.eval_distribute,
       mode=run_config._distribute_coordinator_mode,
       cluster_spec=cluster_spec,
-      session_config=run_config.session_config)
+      session_config=run_config.session_config,
+      server_fn=_server_fn)
 
 
 # TODO(yuefengz): maybe merge the following two functions?
@@ -333,12 +338,17 @@ def estimator_train(estimator, train_distributed_fn, hooks):
     train_distributed_fn(local_estimator, strategy, chief_hooks)
     return local_estimator
 
+  def _server_fn(server):
+    logging.info('Calling server function on server %s' % server)
+    estimator.server = server
+
   return dc.run_distribute_coordinator(
       _worker_fn,
       estimator._config.train_distribute,
       mode=run_config._distribute_coordinator_mode,
       cluster_spec=cluster_spec,
-      session_config=run_config.session_config)
+      session_config=run_config.session_config,
+      server_fn=_server_fn)
 
 
 def estimator_evaluate(estimator, evaluate_distributed_fn, hooks):
@@ -381,11 +391,16 @@ def estimator_evaluate(estimator, evaluate_distributed_fn, hooks):
       chief_hooks = []
     return evaluate_distributed_fn(local_estimator, strategy, chief_hooks)
 
+  def _server_fn(server):
+    logging.info('Calling server function on server %s' % server)
+    estimator.server = server
+
   return dc.run_distribute_coordinator(
       _worker_fn,
       estimator._config.eval_distribute,
       mode=run_config._distribute_coordinator_mode,
       cluster_spec=cluster_spec,
-      session_config=run_config.session_config)
+      session_config=run_config.session_config,
+      server_fn=_server_fn)
 
 # pylint: enable=protected-access

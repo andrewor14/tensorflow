@@ -637,7 +637,8 @@ def run_distribute_coordinator(worker_fn,
                                task_type=None,
                                task_id=None,
                                session_config=None,
-                               rpc_layer="grpc"):
+                               rpc_layer="grpc",
+                               server_fn=None):
   """Runs the coordinator for distributed TensorFlow.
 
   This function runs a split coordinator for distributed TensorFlow in its
@@ -739,6 +740,8 @@ def run_distribute_coordinator(worker_fn,
     session_config: an optional `tf.compat.v1.ConfigProto` object which will be
       passed to `strategy`'s `configure` method and used to create a session.
     rpc_layer: optional string, the protocol for RPC, e.g. "grpc".
+    server_fn: an optional function to be called on the server object once it
+      is available
 
   Raises:
     ValueError: if `cluster_spec` is supplied but not a dict or a ClusterDef or
@@ -816,6 +819,8 @@ def run_distribute_coordinator(worker_fn,
           session_config=session_config,
           rpc_layer=rpc_layer,
           environment=environment)
+      if server_fn is not None:
+        server_fn(server)
       server.join()
   else:
     if mode != CoordinatorMode.INDEPENDENT_WORKER:
@@ -846,6 +851,8 @@ def run_distribute_coordinator(worker_fn,
           session_config=session_config,
           rpc_layer=rpc_layer,
           environment=environment)
+      if server_fn is not None:
+        server_fn(server)
     if task_type in [_TaskType.CHIEF, _TaskType.WORKER]:
       if strategy.extended.experimental_between_graph:
         # All jobs run `worker_fn` if between-graph.

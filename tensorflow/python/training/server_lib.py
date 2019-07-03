@@ -162,6 +162,14 @@ class Server(object):
       pass
     self._server = None
 
+  # Do not copy this server
+  def __copy__(self):
+    return None
+
+  # Do not copy this server
+  def __deepcopy__(self, memo):
+    return None
+
   def start(self):
     """Starts this server.
 
