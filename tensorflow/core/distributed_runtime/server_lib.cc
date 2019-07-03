@@ -33,6 +33,8 @@ ServerFactories* server_factories() {
   static ServerFactories* factories = new ServerFactories;
   return factories;
 }
+
+static std::unordered_map<string, ServerInterface*> active_servers;
 }  // namespace
 
 /* static */
@@ -73,7 +75,19 @@ Status NewServer(const ServerDef& server_def,
                  std::unique_ptr<ServerInterface>* out_server) {
   ServerFactory* factory;
   TF_RETURN_IF_ERROR(ServerFactory::GetFactory(server_def, &factory));
-  return factory->NewServer(server_def, out_server);
+  // If a server with the same server def already exists, destroy it first
+  string server_def_str;
+  server_def.SerializeToString(&server_def_str);
+  auto existing_server = active_servers.find(server_def_str);
+  if (existing_server != active_servers.end()) {
+    LOG(INFO) << "Found existing server; destroying it first: " << server_def_str;
+    existing_server->second->Destroy();
+  }
+  Status status = factory->NewServer(server_def, out_server);
+  LOG(INFO) << "Created new server: " << server_def_str;
+  // Keep track of this new server, overwriting existing ones with the same server def, if any
+  active_servers[server_def_str] = out_server->get();
+  return status;
 }
 
 }  // namespace tensorflow
