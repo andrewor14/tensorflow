@@ -1667,6 +1667,8 @@ TF_CAPI_EXPORT extern void TF_ServerStop(TF_Server* server, TF_Status* status);
 // TF_ServerClose).
 TF_CAPI_EXPORT extern void TF_ServerJoin(TF_Server* server, TF_Status* status);
 
+TF_CAPI_EXPORT extern void TF_ServerDestroy(TF_Server* server, TF_Status* status);
+
 // Returns the target string that can be provided to TF_SetTarget() to connect
 // a TF_Session to `server`.
 //
