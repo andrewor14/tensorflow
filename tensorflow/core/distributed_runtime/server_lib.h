@@ -92,6 +92,8 @@ class ServerFactory {
                            ServerFactory** out_factory);
 };
 
+Status GetServerDefPort(const ServerDef& server_def_, int* port);
+
 // Creates a server based on the given `server_def`, and stores it in
 // `*out_server`. Returns OK on success, otherwise returns an error.
 Status NewServer(const ServerDef& server_def,

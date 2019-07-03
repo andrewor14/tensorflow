@@ -20,6 +20,7 @@ limitations under the License.
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/platform/mutex.h"
 
+
 namespace tensorflow {
 
 namespace {
@@ -34,7 +35,9 @@ ServerFactories* server_factories() {
   return factories;
 }
 
-static std::unordered_map<string, ServerInterface*> active_servers;
+// Key is requested port, as specified in the server def
+static std::unordered_map<int, ServerInterface*> active_servers;
+
 }  // namespace
 
 /* static */
@@ -69,24 +72,50 @@ Status ServerFactory::GetFactory(const ServerDef& server_def,
       absl::StrJoin(server_names, ", "), " ]");
 }
 
+Status GetServerDefPort(const ServerDef& server_def_, int* port) {
+  *port = -1;
+  for (const auto& job : server_def_.cluster().job()) {
+    if (job.name() == server_def_.job_name()) {
+      auto iter = job.tasks().find(server_def_.task_index());
+      if (iter == job.tasks().end()) {
+        return errors::InvalidArgument("Task ", server_def_.task_index(),
+                                       " was not defined in job \"",
+                                       server_def_.job_name(), "\"");
+      }
+      auto colon_index = iter->second.find_last_of(':');
+      if (!strings::safe_strto32(iter->second.substr(colon_index + 1), port)) {
+        return errors::InvalidArgument(
+            "Could not parse port for local server from \"", iter->second,
+            "\".");
+      }
+      break;
+    }
+  }
+  if (*port == -1) {
+    return errors::Internal("Job \"", server_def_.job_name(),
+                            "\" was not defined in cluster");
+  }
+  return Status::OK();
+}
+
 // Creates a server based on the given `server_def`, and stores it in
 // `*out_server`. Returns OK on success, otherwise returns an error.
 Status NewServer(const ServerDef& server_def,
                  std::unique_ptr<ServerInterface>* out_server) {
   ServerFactory* factory;
   TF_RETURN_IF_ERROR(ServerFactory::GetFactory(server_def, &factory));
-  // If a server with the same server def already exists, destroy it first
-  string server_def_str;
-  server_def.SerializeToString(&server_def_str);
-  auto existing_server = active_servers.find(server_def_str);
+  // If a server with the same requested port already exists, destroy it first
+  int requested_port;
+  TF_RETURN_IF_ERROR(tensorflow::GetServerDefPort(server_def, &requested_port));
+  auto existing_server = active_servers.find(requested_port);
   if (existing_server != active_servers.end()) {
-    LOG(INFO) << "Found existing server; destroying it first: " << server_def_str;
+    LOG(INFO) << "Found existing server bound to port " << requested_port << ", destroying it first.";
     existing_server->second->Destroy();
   }
   Status status = factory->NewServer(server_def, out_server);
-  LOG(INFO) << "Created new server: " << server_def_str;
+  LOG(INFO) << "Created new server, binding to port " << requested_port;
   // Keep track of this new server, overwriting existing ones with the same server def, if any
-  active_servers[server_def_str] = out_server->get();
+  active_servers[requested_port] = out_server->get();
   return status;
 }
 

@@ -124,30 +124,7 @@ void GrpcServer::MaybeMutateBuilder(::grpc::ServerBuilder* builder) {}
 
 // Look up the port that has been requested for this task in `server_def_`.
 Status GrpcServer::GetPort(int* port) const {
-  *port = -1;
-  for (const auto& job : server_def_.cluster().job()) {
-    if (job.name() == server_def_.job_name()) {
-      auto iter = job.tasks().find(server_def_.task_index());
-      if (iter == job.tasks().end()) {
-        return errors::InvalidArgument("Task ", server_def_.task_index(),
-                                       " was not defined in job \"",
-                                       server_def_.job_name(), "\"");
-      }
-      auto colon_index = iter->second.find_last_of(':');
-      if (!strings::safe_strto32(iter->second.substr(colon_index + 1), port)) {
-        return errors::InvalidArgument(
-            "Could not parse port for local server from \"", iter->second,
-            "\".");
-      }
-      break;
-    }
-  }
-  if (*port == -1) {
-    return errors::Internal("Job \"", server_def_.job_name(),
-                            "\" was not defined in cluster");
-  }
-
-  return Status::OK();
+  return tensorflow::GetServerDefPort(server_def_, port);
 }
 
 Status GrpcServer::Init(const GrpcServerOptions& opts) {
