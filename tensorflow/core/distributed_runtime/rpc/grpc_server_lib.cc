@@ -83,6 +83,10 @@ GrpcServer::~GrpcServer() {
 }
 
 Status GrpcServer::Destroy() {
+  if (state_ == DESTROYED) {
+    LOG(INFO) << "Not destroying server " << target() << " because it is already stopped";
+    return Status::OK();
+  }
   TF_CHECK_OK(Stop());
   TF_CHECK_OK(Join());
 
@@ -116,6 +120,8 @@ Status GrpcServer::Destroy() {
   // - master_env_.env
   // - worker_env_.env
   // - worker_env_.compute_pool
+
+  state_ = DESTROYED;
 
   return Status::OK();
 }
@@ -357,6 +363,8 @@ Status GrpcServer::Start() {
       return Status::OK();
     case STOPPED:
       return errors::FailedPrecondition("Server has stopped.");
+    case DESTROYED:
+      return errors::FailedPrecondition("Cannot start a server that was destroyed.");
     default:
       LOG(FATAL);
   }
@@ -378,6 +386,8 @@ Status GrpcServer::Stop() {
     case STOPPED:
       LOG(INFO) << "Server already stopped (target: " << target() << ")";
       return Status::OK();
+    case DESTROYED:
+      return errors::FailedPrecondition("Cannot stop a server that was destroyed.");
     default:
       LOG(FATAL);
   }
@@ -396,6 +406,8 @@ Status GrpcServer::Join() {
       worker_thread_.reset();
       eager_thread_.reset();
       return Status::OK();
+    case DESTROYED:
+      return errors::FailedPrecondition("Cannot join a server that was destroyed..");
     default:
       LOG(FATAL);
   }

@@ -149,7 +149,7 @@ class GrpcServer : public ServerInterface {
   //   \                          /
   //    \________________________/
   //            Stop(), Join()
-  enum State { NEW, STARTED, STOPPED };
+  enum State { NEW, STARTED, STOPPED, DESTROYED };
   State state_ GUARDED_BY(mu_);
 
   // Implementation of a TensorFlow master, and RPC polling thread.
