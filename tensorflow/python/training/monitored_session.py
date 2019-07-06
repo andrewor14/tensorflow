@@ -491,6 +491,10 @@ def MonitoredTrainingSession(
   Returns:
     A `MonitoredSession` object.
   """
+
+  if os.getenv("AUTOSCALING_DISABLE_CHECKPOINTS", "").lower() == "true":
+    checkpoint_dir = None
+
   if save_summaries_steps == USE_DEFAULT and save_summaries_secs == USE_DEFAULT:
     save_summaries_steps = 100
     save_summaries_secs = None
