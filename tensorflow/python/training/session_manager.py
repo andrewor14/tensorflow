@@ -281,21 +281,33 @@ class SessionManager(object):
         set.
     """
 
-    sess, is_loaded_from_checkpoint = self._restore_checkpoint(
-        master,
-        saver,
-        checkpoint_dir=checkpoint_dir,
-        checkpoint_filename_with_path=checkpoint_filename_with_path,
-        wait_for_checkpoint=wait_for_checkpoint,
-        max_wait_secs=max_wait_secs,
-        config=config)
+    logging.info("Preparing session")
+
+    try:
+      sess, is_loaded_from_checkpoint = self._restore_checkpoint(
+          master,
+          saver,
+          checkpoint_dir=checkpoint_dir,
+          checkpoint_filename_with_path=checkpoint_filename_with_path,
+          wait_for_checkpoint=wait_for_checkpoint,
+          max_wait_secs=max_wait_secs,
+          config=config)
+    except Exception as e:
+      logging.info("Error in prepare session: %s (%s)" % (e, e.__class__.__name__))
+      traceback.print_exc()
+      raise e
+
+    logging.info("Created session")
+
     if not is_loaded_from_checkpoint:
       if init_op is None and not init_fn and self._local_init_op is None:
         raise RuntimeError("Model is not initialized and no init_op or "
                            "init_fn or local_init_op was given")
       if init_op is not None:
         try:
+          logging.info("Running init op")
           sess.run(init_op, feed_dict=init_feed_dict)
+          logging.info("Done running init op")
         except Exception as e:
           logging.warning("Error in prepare_session while running init_op: %s (%s)" % \
                         (e, e.__class__.__name__))
@@ -303,7 +315,9 @@ class SessionManager(object):
           raise e
       if init_fn:
         try:
+          logging.info("Running init fn")
           init_fn(sess)
+          logging.info("Done running init fn")
         except Exception as e:
           logging.warning("Error in prepare_session while running init_fn: %s (%s)" % \
                           (e, e.__class__.__name__))
@@ -418,37 +432,44 @@ class SessionManager(object):
       tf.DeadlineExceededError: if the session is not available after
         max_wait_secs.
     """
+    logging.info("Waiting for session")
+
     self._target = master
 
     if max_wait_secs is None:
       max_wait_secs = float("Inf")
     timer = _CountDownTimer(max_wait_secs)
 
-    while True:
-      sess = session.Session(self._target, graph=self._graph, config=config)
-      not_ready_msg = None
-      not_ready_local_msg = None
-      local_init_success, not_ready_local_msg = self._try_run_local_init_op(sess)
-      if local_init_success:
-        # Successful if local_init_op is None, or ready_for_local_init_op passes
-        is_ready, not_ready_msg = self._model_ready(sess)
-        if is_ready:
-          return sess
+    try:
+      while True:
+        sess = session.Session(self._target, graph=self._graph, config=config)
+        not_ready_msg = None
+        not_ready_local_msg = None
+        local_init_success, not_ready_local_msg = self._try_run_local_init_op(sess)
+        if local_init_success:
+          # Successful if local_init_op is None, or ready_for_local_init_op passes
+          is_ready, not_ready_msg = self._model_ready(sess)
+          if is_ready:
+            return sess
 
-      self._safe_close(sess)
+        self._safe_close(sess)
 
-      # Do we have enough time left to try again?
-      remaining_ms_after_wait = (
-          timer.secs_remaining() - self._recovery_wait_secs)
-      if remaining_ms_after_wait < 0:
-        raise errors.DeadlineExceededError(
-            None, None,
-            "Session was not ready after waiting %d secs." % (max_wait_secs,))
+        # Do we have enough time left to try again?
+        remaining_ms_after_wait = (
+            timer.secs_remaining() - self._recovery_wait_secs)
+        if remaining_ms_after_wait < 0:
+          raise errors.DeadlineExceededError(
+              None, None,
+              "Session was not ready after waiting %d secs." % (max_wait_secs,))
 
-      logging.info("Waiting for model to be ready.  "
-                   "Ready_for_local_init_op:  %s, ready: %s",
-                   not_ready_local_msg, not_ready_msg)
-      time.sleep(self._recovery_wait_secs)
+        logging.info("Waiting for model to be ready.  "
+                     "Ready_for_local_init_op:  %s, ready: %s",
+                     not_ready_local_msg, not_ready_msg)
+        time.sleep(self._recovery_wait_secs)
+    except Exception as e:
+      logging.warning("Error in wait_for_session: %s (%s)" % \
+                       (e, e.__class__.__name__))
+      traceback.print_exc()
 
   def _safe_close(self, sess):
     """Closes a session without raising an exception.

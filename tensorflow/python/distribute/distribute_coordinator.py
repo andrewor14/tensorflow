@@ -840,7 +840,10 @@ def run_distribute_coordinator(worker_fn,
                                               session_config, cluster_spec,
                                               task_type, task_id)
 
-    if not getattr(strategy.extended, "_std_server_started", False):
+    skip_start_server = os.getenv(
+      "DISTRIBUTE_COORDINATOR_SKIP_START_SERVER", "").lower() == "true"
+    if not getattr(strategy.extended, "_std_server_started", False) and not skip_start_server:
+      logging.info("run_distribute_coordinator starting the server")
       # Right now, with eager mode, context is configured with a std server at
       # the very beginning while with graph mode the std server is started when
       # distribute coordinator is called. We should consolidate these two paths.
@@ -853,6 +856,8 @@ def run_distribute_coordinator(worker_fn,
           environment=environment)
       if server_fn is not None:
         server_fn(server)
+    else:
+      logging.info("run_distribute_coordinator NOT starting the server")
     if task_type in [_TaskType.CHIEF, _TaskType.WORKER]:
       if strategy.extended.experimental_between_graph:
         # All jobs run `worker_fn` if between-graph.
