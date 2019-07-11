@@ -75,6 +75,16 @@ void CollectiveExecutorMgr::Cleanup(int64 step_id) {
   if (ce) ce->Unref();
 }
 
+void CollectiveExecutorMgr::Clear() {
+  {
+    LOG(INFO) << "Clearing executor_table_ in CollectiveExecutorMgr";
+    mutex_lock l(exec_mu_);
+    executor_table_.clear();
+    LOG(INFO) << "Cleared executor_table_ in CollectiveExecutorMgr";
+    param_resolver_->Clear();
+  }
+}
+
 void CollectiveExecutorMgr::GetStepSequenceAsync(
     const GetStepSequenceRequest* request, GetStepSequenceResponse* response,
     const StatusCallback& done) {

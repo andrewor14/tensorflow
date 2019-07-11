@@ -55,6 +55,8 @@ class CollectiveExecutorMgr : public CollectiveExecutorMgrInterface {
 
   void RetireStepId(int64 graph_key, int64 step_id) override {}
 
+  void Clear() override;
+
  protected:
   // Called by FindOrCreate when table entry does not yet exist.
   virtual CollectiveExecutor* Create(int64 step_id);

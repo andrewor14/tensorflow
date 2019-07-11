@@ -498,7 +498,9 @@ class Context(object):
       raise ValueError("server_def is None.")
 
     if self._context_handle is not None:
-      raise RuntimeError("Collective ops must be enabled at program startup")
+      pywrap_tensorflow.TFE_EnableCollectiveOps(self._context_handle, server_def.SerializeToString())
+      self._clear_caches()
+      self._initialize_logical_devices()
 
     self._collective_ops_server_def = server_def
 

@@ -180,6 +180,8 @@ class ParamResolverInterface {
                                      CompleteInstanceResponse* response,
                                      CancellationManager* cancel_mgr,
                                      const StatusCallback& done) = 0;
+
+  virtual void Clear() = 0;
 };
 
 // Graphs which utilize Collective Ops in a common instance must
@@ -229,6 +231,8 @@ class CollectiveExecutorMgrInterface : public StepSequenceInterface {
   virtual ParamResolverInterface* GetParamResolver() const = 0;
 
   virtual DeviceResolverInterface* GetDeviceResolver() const = 0;
+
+  virtual void Clear() = 0;
 };
 
 // Interface that a Collective Op implementation uses to exchange data
