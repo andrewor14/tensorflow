@@ -1144,6 +1144,8 @@ def cond(pred,
   # Always enable control flow v2 if building a function, regardless of toggle.
   if (util.EnableControlFlowV2(ops.get_default_graph()) and
       not context.executing_eagerly()):
+    import tensorflow as tf
+    tf.compat.v1.logging.info("cond_v2.cond_v2")
     return cond_v2.cond_v2(pred, true_fn, false_fn, name)
 
   # We needed to make true_fn/false_fn keyword arguments for

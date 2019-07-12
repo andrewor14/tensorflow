@@ -1413,6 +1413,8 @@ def fused_batch_norm(
     fused_batch_norm_func = gen_nn_ops.fused_batch_norm_v2
   else:
     fused_batch_norm_func = gen_nn_ops._fused_batch_norm  # pylint: disable=protected-access
+  import tensorflow as tf
+  tf.compat.v1.logging.info("fused_batch_norm_func")
   y, batch_mean, batch_var, _, _ = fused_batch_norm_func(
       x,
       scale,

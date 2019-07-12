@@ -18,6 +18,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import tensorflow as tf
 from tensorflow.python.distribute import distribution_strategy_context
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
@@ -265,10 +266,12 @@ class BatchNormalizationBase(Layer):
       return self.dtype or dtypes.float32
 
   def build(self, input_shape):
+    #tf.compat.v1.logging.info("build1")
     input_shape = tensor_shape.TensorShape(input_shape)
     if not input_shape.ndims:
       raise ValueError('Input has undefined rank:', input_shape)
     ndims = len(input_shape)
+    #tf.compat.v1.logging.info("build2")
 
     # Convert axis to list and resolve negatives
     if isinstance(self.axis, int):
@@ -282,6 +285,7 @@ class BatchNormalizationBase(Layer):
     for x in self.axis:
       if x < 0 or x >= ndims:
         raise ValueError('Invalid axis: %d' % x)
+
     if len(self.axis) != len(set(self.axis)):
       raise ValueError('Duplicate axis: %s' % self.axis)
 
@@ -297,6 +301,8 @@ class BatchNormalizationBase(Layer):
       if self.adjustment is not None:
         raise ValueError('When using virtual_batch_size, adjustment cannot '
                          'be specified')
+
+    #tf.compat.v1.logging.info("build3")
 
     if self.fused in (None, True):
       # TODO(yaozhang): if input is not 4D, reshape it to 4D and reshape the
@@ -317,6 +323,8 @@ class BatchNormalizationBase(Layer):
       # particularly tricky. A compromise might be to just support the most
       # common use case (turning 5D w/ virtual batch to NCHW)
 
+    #tf.compat.v1.logging.info("build4")
+
     if self.fused:
       if self.axis == [1]:
         self._data_format = 'NCHW'
@@ -325,6 +333,8 @@ class BatchNormalizationBase(Layer):
       else:
         raise ValueError('Unsupported axis, fused batch norm only supports '
                          'axis == [1] or axis == [3]')
+
+    #tf.compat.v1.logging.info("build5")
 
     axis_to_dim = {x: input_shape.dims[x].value for x in self.axis}
     for x in axis_to_dim:
@@ -346,7 +356,10 @@ class BatchNormalizationBase(Layer):
         for idx, x in enumerate(self.axis):
           self.axis[idx] = x + 1      # Account for added dimension
 
+    #tf.compat.v1.logging.info("build6")
+
     if self.scale:
+      #tf.compat.v1.logging.info("build7a")
       self.gamma = self.add_weight(
           name='gamma',
           shape=param_shape,
@@ -357,12 +370,14 @@ class BatchNormalizationBase(Layer):
           trainable=True,
           experimental_autocast=False)
     else:
+      #tf.compat.v1.logging.info("build7b")
       self.gamma = None
       if self.fused:
         self._gamma_const = K.constant(
             1.0, dtype=self._param_dtype, shape=param_shape)
 
     if self.center:
+      #tf.compat.v1.logging.info("build8a") 
       self.beta = self.add_weight(
           name='beta',
           shape=param_shape,
@@ -373,6 +388,7 @@ class BatchNormalizationBase(Layer):
           trainable=True,
           experimental_autocast=False)
     else:
+      #tf.compat.v1.logging.info("build8b") 
       self.beta = None
       if self.fused:
         self._beta_const = K.constant(
@@ -381,10 +397,13 @@ class BatchNormalizationBase(Layer):
     try:
       # Disable variable partitioning when creating the moving mean and variance
       if hasattr(self, '_scope') and self._scope:
+        #tf.compat.v1.logging.info("build9a") 
         partitioner = self._scope.partitioner
         self._scope.set_partitioner(None)
       else:
+        #tf.compat.v1.logging.info("build9b") 
         partitioner = None
+      #tf.compat.v1.logging.info("build10") 
       self.moving_mean = self.add_weight(
           name='moving_mean',
           shape=param_shape,
@@ -394,7 +413,7 @@ class BatchNormalizationBase(Layer):
           trainable=False,
           aggregation=tf_variables.VariableAggregation.MEAN,
           experimental_autocast=False)
-
+      #tf.compat.v1.logging.info("build10.1") 
       self.moving_variance = self.add_weight(
           name='moving_variance',
           shape=param_shape,
@@ -404,8 +423,10 @@ class BatchNormalizationBase(Layer):
           trainable=False,
           aggregation=tf_variables.VariableAggregation.MEAN,
           experimental_autocast=False)
+      #tf.compat.v1.logging.info("build11") 
 
       if self.renorm:
+        #tf.compat.v1.logging.info("build12") 
         # Create variables to maintain the moving mean and standard deviation.
         # These are used in training and thus are different from the moving
         # averages above. The renorm variables are colocated with moving_mean
@@ -426,22 +447,29 @@ class BatchNormalizationBase(Layer):
               experimental_autocast=False)
           return var
 
+        #tf.compat.v1.logging.info("build12.1") 
         with distribution_strategy_context.get_strategy(
         ).extended.colocate_vars_with(self.moving_mean):
+          #tf.compat.v1.logging.info("build12.2") 
           self.renorm_mean = _renorm_variable('renorm_mean', param_shape)
           self.renorm_mean_weight = _renorm_variable('renorm_mean_weight', ())
         # We initialize renorm_stddev to 0, and maintain the (0-initialized)
         # renorm_stddev_weight. This allows us to (1) mix the average
         # stddev with the minibatch stddev early in training, and (2) compute
         # the unbiased average stddev by dividing renorm_stddev by the weight.
+        #tf.compat.v1.logging.info("build12.3") 
         with distribution_strategy_context.get_strategy(
         ).extended.colocate_vars_with(self.moving_variance):
+          #tf.compat.v1.logging.info("build12.4") 
           self.renorm_stddev = _renorm_variable('renorm_stddev', param_shape)
           self.renorm_stddev_weight = _renorm_variable('renorm_stddev_weight',
-                                                       ())
+                                                   ())
+      #tf.compat.v1.logging.info("build13") 
     finally:
       if partitioner:
+        #tf.compat.v1.logging.info("build14") 
         self._scope.set_partitioner(partitioner)
+    #tf.compat.v1.logging.info("build15") 
     self.built = True
 
   def _assign_moving_average(self, variable, value, momentum, inputs_size):
@@ -480,6 +508,8 @@ class BatchNormalizationBase(Layer):
           data_format=self._data_format)
 
     def _fused_batch_norm_inference():
+      import tensorflow as tf
+      tf.compat.v1.logging.info("nn.fused_batch_norm")
       return nn.fused_batch_norm(
           inputs,
           gamma,
@@ -490,6 +520,8 @@ class BatchNormalizationBase(Layer):
           is_training=False,
           data_format=self._data_format)
 
+    import tensorflow as tf
+    tf.compat.v1.logging.info("tf_utils.smart_cond")
     output, mean, variance = tf_utils.smart_cond(
         training, _fused_batch_norm_training, _fused_batch_norm_inference)
     if not self._bessels_correction_test_only:
@@ -648,6 +680,8 @@ class BatchNormalizationBase(Layer):
         return outputs
 
     if self.fused:
+      import tensorflow as tf
+      tf.compat.v1.logging.info("self._fused_batch_norm")
       outputs = self._fused_batch_norm(inputs, training=training)
       if self.virtual_batch_size is not None:
         # Currently never reaches here since fused_batch_norm does not support

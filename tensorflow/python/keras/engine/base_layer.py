@@ -27,6 +27,7 @@ import json
 import numpy as np
 from six.moves import zip  # pylint: disable=redefined-builtin
 
+import tensorflow as tf
 from tensorflow.core.framework import node_def_pb2
 from tensorflow.python import autograph
 from tensorflow.python.distribute import distribution_strategy_context as ds_context
@@ -561,7 +562,9 @@ class Layer(module.Module):
     Raises:
       ValueError: if the layer's `call` method returns None (an invalid value).
     """
+    #tf.compat.v1.logging.info("call1")
     input_list = nest.flatten(inputs)
+    #tf.compat.v1.logging.info("call2")
 
     # Accept NumPy and scalar inputs by converting to Tensors.
     if any(isinstance(x, (np.ndarray, float, int)) for x in input_list):
@@ -574,14 +577,20 @@ class Layer(module.Module):
       inputs = nest.map_structure(_convert_non_tensor, inputs)
       input_list = nest.flatten(inputs)
 
+    #tf.compat.v1.logging.info("call3")
+
     # Handle `mask` propagation from previous layer to current layer. Masks can
     # be propagated explicitly via the `mask` argument, or implicitly via
     # setting the `_keras_mask` attribute on the inputs to a Layer. Masks passed
     # explicitly take priority.
     input_masks = self._collect_input_masks(inputs, args, kwargs)
+    #tf.compat.v1.logging.info("call4")
+
     if (self._expects_mask_arg and input_masks is not None and
         not self._call_arg_was_passed('mask', args, kwargs)):
       kwargs['mask'] = input_masks
+
+    #tf.compat.v1.logging.info("call5")
 
     # We will attempt to build a TF graph if & only if all inputs are symbolic.
     # This is always the case in graph mode. It can also be the case in eager
@@ -589,11 +598,15 @@ class Layer(module.Module):
     # models using the functional API).
     build_graph = tf_utils.are_all_symbolic_tensors(input_list)
 
+    #tf.compat.v1.logging.info("call6")
+
     # Only create Keras history if at least one tensor originates from a
     # `keras.Input`. Otherwise this Layer may be being used outside the Keras
     # framework.
     if build_graph and base_layer_utils.needs_keras_history(inputs):
       base_layer_utils.create_keras_history(inputs)
+
+    #tf.compat.v1.logging.info("call7")
 
     # Clear eager losses on top level model call.
     # We are clearing the losses only on the top level model call and not on
@@ -602,18 +615,27 @@ class Layer(module.Module):
         not base_layer_utils.call_context().in_call):
       self._clear_losses()
 
+    #tf.compat.v1.logging.info("call8")
+
     with base_layer_utils.call_context().enter(self, inputs, build_graph):
+      #tf.compat.v1.logging.info("call9")
+
       # Check input assumptions set after layer building, e.g. input shape.
       if build_graph:
+        #tf.compat.v1.logging.info("call10.1")
         # Symbolic execution on symbolic tensors. We will attempt to build
         # the corresponding TF subgraph inside `backend.get_graph()`
         input_spec.assert_input_compatibility(self.input_spec, inputs,
                                               self.name)
+        #tf.compat.v1.logging.info("call10.2")
         graph = backend.get_graph()
+        #tf.compat.v1.logging.info("call10.3")
         with graph.as_default(), backend.name_scope(self._name_scope()):
+          #tf.compat.v1.logging.info("call10.4")
           # Build layer if applicable (if the `build` method has been
           # overridden).
           self._maybe_build(inputs)
+          #tf.compat.v1.logging.info("call10.5")
 
           # Wrapping `call` function in autograph to allow for dynamic control
           # dependencies in call. We are limiting this to subclassed layers as
@@ -633,6 +655,7 @@ class Layer(module.Module):
               call_fn = converted_func
           else:
             call_fn = self.call
+          #tf.compat.v1.logging.info("call10.6")
 
           # Explicitly pass the learning phase placeholder to `call` if
           # the `training` argument was left unspecified by the user.
@@ -648,12 +671,15 @@ class Layer(module.Module):
             if training_arg is None:
               learning_phase_passed_by_framework = True
               kwargs['training'] = backend.learning_phase()
+          #tf.compat.v1.logging.info("call10.7")
 
           if not self.dynamic:
             try:
               with base_layer_utils.autocast_context_manager(
                   input_list,
                   self._mixed_precision_policy.should_cast_variables):
+                #tf.compat.v1.logging.info("call10.8")
+
                 # Add auto_control_deps in V2 when they are not already added by
                 # a `tf.function`.
                 if (ops.executing_eagerly_outside_functions() and
@@ -665,6 +691,8 @@ class Layer(module.Module):
                     outputs = base_layer_utils.mark_as_return(outputs, acd)
                 else:
                   outputs = call_fn(inputs, *args, **kwargs)
+
+                #tf.compat.v1.logging.info("call10.9")
 
             except TypeError as e:
               exception_str = str(e)
@@ -683,19 +711,24 @@ class Layer(module.Module):
             # run the underlying TF graph (which is disconnected).
             # TODO(fchollet): consider py_func as an alternative, which
             # would enable us to run the underlying graph if needed.
+            #tf.compat.v1.logging.info("call10.10")
             outputs = self._symbolic_call(inputs)
 
           if outputs is None:
             raise ValueError('A layer\'s `call` method should return a '
                              'Tensor or a list of Tensors, not None '
                              '(layer: ' + self.name + ').')
+          #tf.compat.v1.logging.info("call10.11")
           if base_layer_utils.have_all_keras_metadata(inputs):
             if learning_phase_passed_by_framework:
               kwargs.pop('training')
             inputs, outputs = self._set_connectivity_metadata_(
                 inputs, outputs, args, kwargs)
+          #tf.compat.v1.logging.info("call10.12")
           self._handle_activity_regularization(inputs, outputs)
+          #tf.compat.v1.logging.info("call10.13")
           self._set_mask_metadata(inputs, outputs, input_masks)
+          #tf.compat.v1.logging.info("call10.14")
           if hasattr(self, '_set_inputs') and not self.inputs:
             # Subclassed network: explicitly set metadata normally set by
             # a call to self._set_inputs().
@@ -703,16 +736,24 @@ class Layer(module.Module):
             # causes garbage collection issues because of the placeholders
             # created on the default Keras graph.
             self._set_inputs(inputs, outputs)
+          #tf.compat.v1.logging.info("call10.15")
       else:
         # Eager execution on data tensors.
+        #tf.compat.v1.logging.info("call11.1")
         with backend.name_scope(self._name_scope()):
+          #tf.compat.v1.logging.info("call11.2")
           self._maybe_build(inputs)
+          #tf.compat.v1.logging.info("call11.3")
           with base_layer_utils.autocast_context_manager(
               input_list, self._mixed_precision_policy.should_cast_variables):
+            #tf.compat.v1.logging.info("call11.4")
             outputs = self.call(inputs, *args, **kwargs)
+          #tf.compat.v1.logging.info("call11.5")
           self._handle_activity_regularization(inputs, outputs)
+          #tf.compat.v1.logging.info("call11.6")
           self._set_mask_metadata(inputs, outputs, input_masks)
 
+    #tf.compat.v1.logging.info("call12")
     return outputs
 
   @property

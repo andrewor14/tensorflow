@@ -77,6 +77,8 @@ def cond_v2(pred, true_fn, false_fn, name="cond"):
             true_name, collections=ops.get_default_graph()._collections),  # pylint: disable=protected-access
         add_control_dependencies=add_control_dependencies,
         op_return_value=pred)
+    import tensorflow as tf
+    tf.compat.v1.logging.info("func_graph_module.func_graph_from_py_func")
     false_graph = func_graph_module.func_graph_from_py_func(
         false_name,
         false_fn, [], {},

@@ -174,6 +174,7 @@ class CollectiveReduceOpKernel : public CollectiveOpKernel {
                  &(*sub_node.mutable_attr())["T"]);
     col_params_.merge_op = BuildOpKernel(c, merge_op_name, &sub_node);
     col_params_.final_op = BuildOpKernel(c, final_op_name, &sub_node);
+    LOG(INFO) << "Created CollectiveReduce op with params " << col_params_.ToString();
   }
 
   std::unique_ptr<OpKernel> BuildOpKernel(OpKernelConstruction* c,
@@ -222,13 +223,13 @@ class CollectiveReduceOpKernel : public CollectiveOpKernel {
     auto actual_done = [c, instance_key, done](const Status& s) {
       OP_REQUIRES_OK_ASYNC(c, s, done);
       done();
-      VLOG(1) << "CollectiveReduceKernel ExecuteAsync done for device "
+      LOG(INFO) << "CollectiveReduceKernel ExecuteAsync done for device "
               << c->device()->name() << " instance " << instance_key;
     };
-    VLOG(1) << "CollectiveReduceKernel ExecuteAsync start for collective "
+    LOG(INFO) << "CollectiveReduceKernel ExecuteAsync start for collective "
             << col_params_.name << " device " << c->device()->name()
             << " group " << col_params_.group.group_key << " instance "
-            << instance_key;
+            << instance_key << " size " << col_params_.group.group_size;
     col_exec->ExecuteAsync(c, col_params_, GetCollectiveKey(c), actual_done);
   }
 

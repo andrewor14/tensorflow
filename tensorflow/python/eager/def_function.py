@@ -396,45 +396,68 @@ class Function(object):
   def __call__(self, *args, **kwds):
     """Calls the graph function."""
     context.ensure_initialized()
+    import tensorflow as tf
+    tf.compat.v1.logging.info("func1")
     if RUN_FUNCTIONS_EAGERLY:
+      tf.compat.v1.logging.info("func2")
       return self._python_function(*args, **kwds)
     if self._created_variables:
+      tf.compat.v1.logging.info("func3")
       # In this case we have created variables on the first call, so we run the
       # defunned version which is guaranteed to never create variables.
-      return self._stateless_fn(*args, **kwds)  # pylint: disable=not-callable
+      fn = self._stateless_fn(*args, **kwds)  # pylint: disable=not-callable
+      tf.compat.v1.logging.info("func3.1")
+      return fn
     elif self._stateful_fn is not None:
+      tf.compat.v1.logging.info("func4")
       # In this case we have not created variables on the first call. So we can
       # run the first trace but we should fail if variables are created.
       results = self._stateful_fn(*args, **kwds)
+      tf.compat.v1.logging.info("func4.1")
       if self._created_variables:
         raise ValueError("Creating variables on a non-first call to a function"
                          " decorated with tf.function.")
+      tf.compat.v1.logging.info("func4.2")
       return results
 
+    tf.compat.v1.logging.info("func5")
     # This is the first call of __call__, so we have to initialize.
     initializer_map = {}
     self._initialize(args, kwds, add_initializers_to=initializer_map)
+    tf.compat.v1.logging.info("func6")
     if self._created_variables:
       try:
         # Attempt to initialize variables eagerly and without conds by lifting
         # out initialization graphs. This is the only initialization strategy
         # compatible with XLA at the moment.
+        tf.compat.v1.logging.info("func7")
         self._initialize_uninitialized_variables(initializer_map)
+        tf.compat.v1.logging.info("func7.1")
       except lift_to_graph.UnliftableError:
         pass  # Fall through to cond-based initialization.
       else:
         # Lifting succeeded, so variables are initialized and we can run the
         # stateless function.
-        return self._stateless_fn(*args, **kwds)
+        tf.compat.v1.logging.info("func7.2")
+        fn = self._stateless_fn(*args, **kwds)
+        tf.compat.v1.logging.info("func7.3")
+        return fn
     else:
+      tf.compat.v1.logging.info("func8")
       canon_args, canon_kwds = \
           self._stateful_fn._function_spec.canonicalize_function_inputs(  # pylint: disable=protected-access
               *args, **kwds)
+      tf.compat.v1.logging.info("func8.1")
       # If we did not create any variables the trace we have is good enough.
-      return self._concrete_stateful_fn._filtered_call(canon_args, canon_kwds)  # pylint: disable=protected-access
+      fn = self._concrete_stateful_fn._filtered_call(canon_args, canon_kwds)  # pylint: disable=protected-access
+      tf.compat.v1.logging.info("func8.2")
+      return fn
+
+    tf.compat.v1.logging.info("func9")
 
     def fn_with_cond(*inner_args, **inner_kwds):
       """Conditionally runs initialization if it's needed."""
+      tf.compat.v1.logging.info("func_cond1")
       condition = True
       for wr in self._created_variables:
         variable = wr()
@@ -476,20 +499,27 @@ class Function(object):
         condition = math_ops.logical_and(
             condition, resource_variable_ops.var_is_initialized_op(
                 variable.handle))
+      tf.compat.v1.logging.info("func_cond2")
       # We want to call stateless_fn if possible because it avoids recomputing
       # potentially expensive initializers.
-      return control_flow_ops.cond(
+      cond = control_flow_ops.cond(
           condition,
           lambda: self._stateless_fn(*inner_args, **inner_kwds),
           functools.partial(self._concrete_stateful_fn._filtered_call,  # pylint: disable=protected-access
                             inner_args, inner_kwds))
+      tf.compat.v1.logging.info("func_cond3")
+      return cond
 
     # We've created variables and are unable to lift the initialization graphs,
     # so we fall back to initializing with conds while running the function.
+    tf.compat.v1.logging.info("func10")
     canon_args, canon_kwds = \
         self._stateful_fn._function_spec.canonicalize_function_inputs(  # pylint: disable=protected-access
             *args, **kwds)
-    return function_lib.defun(fn_with_cond)(*canon_args, **canon_kwds)
+    tf.compat.v1.logging.info("func11")
+    fn = function_lib.defun(fn_with_cond)(*canon_args, **canon_kwds)
+    tf.compat.v1.logging.info("func12")
+    return fn
 
   @property
   def python_function(self):

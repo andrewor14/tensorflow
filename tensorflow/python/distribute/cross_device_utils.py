@@ -329,7 +329,8 @@ def build_collective_reduce(input_tensors,
                             num_workers,
                             collective_keys,
                             reduction_op='Add',
-                            unary_op='Id'):
+                            unary_op='Id',
+                            should_print=False):
   """Build a subgraph that does one full all-reduce, using the collective Op.
 
   Args:
@@ -348,6 +349,8 @@ def build_collective_reduce(input_tensors,
   Raises:
     ValueError: There must be at least two tensors over all the workers.
   """
+  import tensorflow as tf
+  #if should_print: tf.compat.v1.logging.info("  build_collective_reduce1")
   group_size = len(input_tensors) * num_workers
   if group_size < 2:
     return input_tensors
@@ -356,24 +359,39 @@ def build_collective_reduce(input_tensors,
   group_key = collective_keys.get_group_key(devices)
   instance_key = collective_keys.get_instance_key()
   subdiv_offsets = [0]  # TODO(tucker): maybe support non-default subdiv spec
+  #if should_print: tf.compat.v1.logging.info("  build_collective_reduce2")
 
   def collective_all_reduce():
     """Call collective allreduce."""
+    #if should_print: tf.compat.v1.logging.info("  build_collective_reduce7")
     assert not context.executing_eagerly()
+    #if should_print: tf.compat.v1.logging.info("  build_collective_reduce8")
     out_tensors = []
     for d in range(num_devices):
       with ops.device(devices[d]):
+        #if should_print: tf.compat.v1.logging.info("  build_collective_reduce9")
         reduce_op = collective_ops.all_reduce(
             input_tensors[d], group_size, group_key, instance_key, reduction_op,
             unary_op, subdiv_offsets)
+        #if should_print: tf.compat.v1.logging.info("  build_collective_reduce10")
         out_tensors.append(reduce_op)
+    #if should_print: tf.compat.v1.logging.info("  build_collective_reduce11")
     return out_tensors
 
-  if context.executing_eagerly():
+  is_eager = context.executing_eagerly()
+
+  if should_print: tf.compat.v1.logging.info("  build_collective_reduce3, is eager = %s" % is_eager)
+
+  if is_eager:
+    if should_print: tf.compat.v1.logging.info("  build_collective_reduce4")
     # Collective ops will block unless they are executed concurrently such as in
     # a graph or a defun.
     collective_all_reduce = def_function.function(collective_all_reduce)
-  return collective_all_reduce()
+    if should_print: tf.compat.v1.logging.info("  build_collective_reduce5")
+
+  x = collective_all_reduce()
+  if should_print: tf.compat.v1.logging.info("  build_collective_reduce6")
+  return x
 
 
 def build_collective_gather(input_tensors, num_workers, collective_keys):

@@ -1234,6 +1234,8 @@ def internal_convert_to_tensor(value,
                            dtypes.as_dtype(preferred_dtype).base_dtype))
 
     if ret is None:
+      #import tensorflow as tf
+      #tf.compat.v1.logging.info("conversion_func")
       ret = conversion_func(value, dtype=dtype, name=name, as_ref=as_ref)
 
     if ret is NotImplemented:

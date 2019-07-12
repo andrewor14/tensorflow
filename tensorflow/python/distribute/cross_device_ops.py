@@ -1063,31 +1063,47 @@ class CollectiveAllReduce(CrossDeviceOps):
 
     logging.log_first_n(
         logging.INFO, "Collective batch_all_reduce: %d all-reduces, "
-        "num_workers = %d" % (len(per_replica_values), self._num_workers), 10)
+        "num_workers = %d" % (len(per_replica_values), self._num_workers), 1000)
+
+    import tensorflow as tf
+    tf.compat.v1.logging.info("doing batch_all_reduce_dense")
 
     chunked_gv = self._make_gradient_chunks(per_replica_values,
                                             self._all_reduce_merge_scope)
 
     reduced_gv_list = []
+    should_print = True
     for chunk in chunked_gv:
       with ops.name_scope("allreduce"):
         for grad_and_vars in chunk:
           # Gradients for the same variable but from different devices.
+          #if should_print:
+          #  tf.compat.v1.logging.info("doing batch_all_reduce_dense1.1, num_workers = %s" % self._num_workers)
+          #  tf.compat.v1.logging.info("  num_workers = %s" % self._num_workers)
+          #  tf.compat.v1.logging.info("  self._collective_keys._group_key_table = %s" % self._collective_keys._group_key_table)
+          #  tf.compat.v1.logging.info("  self._collective_keys._instance_key_id_to_key_table = %s" % self._collective_keys._instance_key_id_to_key_table)
           scaled_grads = [g for g, _ in grad_and_vars]
           collective_reduced = cross_device_utils.build_collective_reduce(
               scaled_grads, self._num_workers, self._collective_keys, "Add",
-              "Id")
+              "Id", should_print)
+          #if should_print: tf.compat.v1.logging.info("doing batch_all_reduce_dense1.2")
           result = []
           for (_, v), g in zip(grad_and_vars, collective_reduced):
             result.append([g, v])
           reduced_gv_list.append(result)
+          #if should_print: tf.compat.v1.logging.info("doing batch_all_reduce_dense1.3")
+          should_print = False
+
+    #tf.compat.v1.logging.info("doing batch_all_reduce_dense2")
 
     new_device_grads = [list(x) for x in zip(*reduced_gv_list)]
-    return _ungroup_and_make_mirrored(
+    x = _ungroup_and_make_mirrored(
         new_device_grads,
         per_replica_values[0],
         reduce_op,
         num_between_graph_workers=self._num_workers)
+    #tf.compat.v1.logging.info("doing batch_all_reduce_dense3")
+    return x
 
   def _do_batch_all_reduce_sparse(self, reduce_op, per_replica_values):
     """All-reduce IndexedSlices across all workers in a batch."""

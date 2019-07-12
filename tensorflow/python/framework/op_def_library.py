@@ -519,6 +519,8 @@ class OpDefLibrary(object):
             default_dtype = default_type_attr_map[input_arg.type_attr]
 
           try:
+            #import tensorflow as tf
+            #tf.compat.v1.logging.info("ops.internal_convert_to_tensor")
             values = ops.internal_convert_to_tensor(
                 values,
                 name=input_arg.name,

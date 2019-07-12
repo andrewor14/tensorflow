@@ -285,6 +285,13 @@ class Context(object):
                device_policy=None,
                execution_mode=None,
                server_def=None):
+    self.reset(config, device_policy, execution_mode, server_def)
+
+  def reset(self,
+               config=None,
+               device_policy=None,
+               execution_mode=None,
+               server_def=None):
     """Creates a new Context.
 
     Args:
@@ -498,6 +505,7 @@ class Context(object):
       raise ValueError("server_def is None.")
 
     if self._context_handle is not None:
+      #raise ValueError("Aiya...")
       pywrap_tensorflow.TFE_EnableCollectiveOps(self._context_handle, server_def.SerializeToString())
       self._clear_caches()
       self._initialize_logical_devices()
@@ -529,18 +537,18 @@ class Context(object):
     Raises:
       RuntimeError: if this method is not called at program startup.
     """
-    if self._collective_leader is not None:
-      if (self._collective_leader != collective_leader or
-          self._collective_scoped_allocator_enabled_ops !=
-          scoped_allocator_enabled_ops or
-          self._collective_use_nccl_communication != use_nccl_communication or
-          self._collective_device_filters != device_filters):
-        raise ValueError("Collective ops are already configured.")
-      else:
-        return
+    #if self._collective_leader is not None:
+    #  if (self._collective_leader != collective_leader or
+    #      self._collective_scoped_allocator_enabled_ops !=
+    #      scoped_allocator_enabled_ops or
+    #      self._collective_use_nccl_communication != use_nccl_communication or
+    #      self._collective_device_filters != device_filters):
+    #    raise ValueError("Collective ops are already configured.")
+    #  else:
+    #    return
 
-    if self._context_handle is not None:
-      raise RuntimeError("Collective ops must be configured at program startup")
+    #if self._context_handle is not None:
+    #  raise RuntimeError("Collective ops must be configured at program startup")
 
     self._collective_leader = collective_leader
     self._collective_scoped_allocator_enabled_ops = scoped_allocator_enabled_ops

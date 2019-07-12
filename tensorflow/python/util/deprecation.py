@@ -504,6 +504,7 @@ def deprecated_args(date, instructions, *deprecated_arg_names_or_tuples,
                 func.__module__, arg_name,
                 'in a future version' if date is None else ('after %s' % date),
                 instructions)
+      #logging.info("deprecation: func")
       return func(*args, **kwargs)
 
     doc = _add_deprecated_arg_notice_to_docstring(

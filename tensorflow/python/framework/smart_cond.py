@@ -55,6 +55,8 @@ def smart_cond(pred, true_fn=None, false_fn=None, name=None):
     else:
       return false_fn()
   else:
+    import tensorflow as tf
+    tf.compat.v1.logging.info("control_flow_ops.cond")
     return control_flow_ops.cond(pred, true_fn=true_fn, false_fn=false_fn,
                                  name=name)
 

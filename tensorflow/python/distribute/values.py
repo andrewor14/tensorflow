@@ -318,6 +318,8 @@ class DistributedValues(object):
       else:
         device = distribute_lib.get_update_device()
         if device is None:
+          import tensorflow as tf
+          tf.compat.v1.logging.info("self._get_cross_replica (I am %s)" % self.__class__.__name__)
           return self._get_cross_replica()
     device = device_util.canonicalize(device)
     return self._device_map.select_for_device(self._values, device)
@@ -1419,6 +1421,8 @@ class SyncOnReadVariable(DistributedVariable, PerReplica):
   def _get_cross_replica(self):
     if self._aggregation == vs.VariableAggregation.ONLY_FIRST_REPLICA:
       return self.primary
+    import tensorflow as tf
+    tf.compat.v1.logging.info("self._distribute_strategy.reduce")
     return self._distribute_strategy.reduce(
         reduce_util.ReduceOp.from_variable_aggregation(self.aggregation), self,
         axis=None)
@@ -1446,6 +1450,8 @@ class SyncOnReadVariable(DistributedVariable, PerReplica):
 # Register a conversion function for SyncOnReadVariable which allows as_ref to
 # be true.
 def _tensor_conversion_sync_on_read(var, dtype=None, name=None, as_ref=False):
+  import tensorflow as tf
+  tf.compat.v1.logging.info("ops.internal_convert_to_tensor")
   return ops.internal_convert_to_tensor(
       var.get(), dtype=dtype, name=name, as_ref=as_ref)
 

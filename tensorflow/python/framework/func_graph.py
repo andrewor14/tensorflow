@@ -713,6 +713,8 @@ def func_graph_from_py_func(name,
         python_func = tf_decorator.rewrap(python_func, original_func,
                                           converted_func)
 
+      import tensorflow as tf
+      tf.compat.v1.logging.info("python_func")
       func_outputs = python_func(*func_args, **func_kwargs)
 
       # invariant: `func_outputs` contains only Tensors, CompositeTensors,
