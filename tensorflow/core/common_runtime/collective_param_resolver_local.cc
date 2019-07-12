@@ -78,15 +78,6 @@ string GetCollectiveName(const CollectiveParams* cp, bool nccl) {
 }
 }  // namespace
 
-void CollectiveParamResolverLocal::Clear() {
-  {
-    LOG(INFO) << "Clearing group_table_ in CollectiveParamResolverLocal";
-    mutex_lock l(group_mu_);
-    group_table_.clear();
-    LOG(INFO) << "Cleared group_table_ in CollectiveParamResolverLocal";
-  }
-}
-
 void CollectiveParamResolverLocal::CompleteGroupLocal(
     const string& device, CollectiveParams* cp, const GroupRecCallback& done) {
   VLOG(1) << "CompleteGroupLocal device=" << device << " cp: " << cp << ": "

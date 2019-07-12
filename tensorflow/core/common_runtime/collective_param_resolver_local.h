@@ -58,8 +58,6 @@ class CollectiveParamResolverLocal : public ParamResolverInterface {
                              CancellationManager* cancel_mgr,
                              const StatusCallback& done) override;
 
-  void Clear() override;
-
  protected:
   // For access to InstanceRec and CompleteDefaultRanking.
   friend class CollectiveParamResolverLocalTest;

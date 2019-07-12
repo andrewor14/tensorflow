@@ -582,8 +582,6 @@ Status EagerContext::StoreCollectiveOpsServer(
   InitDeviceMapAndAsync();
   ClearCaches();
 
-  collective_executor_mgr()->Clear();
-
   pflr_.reset(new ProcessFunctionLibraryRuntime(
       local_unowned_device_manager_, env_, TF_GRAPH_DEF_VERSION, &func_lib_def_,
       {}, thread_pool_.get()));
