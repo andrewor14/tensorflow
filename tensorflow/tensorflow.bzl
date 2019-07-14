@@ -1770,7 +1770,7 @@ def tf_custom_op_library(name, srcs = [], gpu_srcs = [], deps = [], linkopts = [
         name = name + "_check_deps",
         disallowed_deps = [
             clean_dep("//tensorflow/core:framework"),
-            clean_dep("//tensorflow/core:lib"),
+            #clean_dep("//tensorflow/core:lib"),
         ],
         deps = deps + if_cuda_is_configured_compat(cuda_deps) + if_rocm_is_configured(rocm_deps),
     )
