@@ -20,11 +20,13 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import os
 import abc
 import functools
 
 import six
 
+import tensorflow as tf
 from tensorflow.python.distribute import distribution_strategy_context as distribute_ctx
 from tensorflow.python.distribute import reduce_util as ds_reduce_util
 from tensorflow.python.eager import backprop
@@ -443,10 +445,14 @@ class OptimizerV2(trackable.Trackable):
 
   def _distributed_apply(self, distribution, grads_and_vars, name):
     """`apply_gradients` using a `DistributionStrategy`."""
-    reduced_grads = distribution.extended.batch_reduce_to(
-        ds_reduce_util.ReduceOp.SUM, grads_and_vars)
-    var_list = [v for _, v in grads_and_vars]
-    grads_and_vars = zip(reduced_grads, var_list)
+    if os.getenv("BYPASS_DISTRIBUTION_STRATEGY_ALLREDUCE", "").lower() != "true":
+      reduced_grads = distribution.extended.batch_reduce_to(
+          ds_reduce_util.ReduceOp.SUM, grads_and_vars)
+      var_list = [v for _, v in grads_and_vars]
+      grads_and_vars = zip(reduced_grads, var_list)
+    else:
+      tf.compat.v1.logging.info("Bypassing distribution strategy allreduce in %s" %\
+        self.__class__.__name__)
 
     def apply_grad_to_update_var(var, grad):
       """Apply gradient to variable."""
