@@ -1952,11 +1952,21 @@ class Model(network.Network):
           ' without calling `model.compile` after ?', 1)
 
   def _make_train_function(self):
+    import tensorflow as tf
     has_recompiled = self._recompile_weights_loss_and_weighted_metrics()
     metrics_tensors = [
         self._all_metrics_tensors[m] for m in self.metrics_names[1:]
     ]
+    tf.logging.info("Metrics tensors: (%s)" % len(metrics_tensors))
+    for mt in metrics_tensors:
+      tf.logging.info("  %s" % mt)
+
     self._check_trainable_weights_consistency()
+
+    tf.logging.info("Collected weights: (%s)" % len(self._collected_trainable_weights))
+    for ctw in self._collected_trainable_weights:
+      tf.logging.info("  %s" % ctw)
+    
     # If we have re-compiled the loss/weighted metric sub-graphs then create
     # train function even if one exists already. This is because
     # `_feed_sample_weights` list has been updated on re-copmpile.

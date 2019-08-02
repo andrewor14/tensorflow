@@ -22,6 +22,7 @@ import contextlib
 import copy
 import threading
 
+import tensorflow as tf
 from tensorflow.python import pywrap_tensorflow
 from tensorflow.python.distribute import cross_device_ops as cross_device_ops_lib
 from tensorflow.python.distribute import device_util
@@ -557,6 +558,7 @@ class MirroredExtended(distribute_lib.StrategyExtendedV1):
             # ensure that we ignore the name scope and instead use the given
             # name as the absolute name of the variable.
             kwargs["name"] = "%s/replica_%d/" % (var0name, i)
+            tf.logging.info("CREATING VARIABLE %s" % kwargs["name"])
             # Initialize replicas with the same value:
             def initial_value_fn(device=d):
               if context.executing_eagerly() or ops.inside_function():

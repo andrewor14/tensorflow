@@ -288,6 +288,9 @@ class CollectiveAllReduceExtended(mirrored_strategy.MirroredExtended):
       """Creates one MirroredVariable on the current worker."""
       unique_var_name = ops.get_default_graph().unique_name(
           kwargs["name"], mark_as_used=False).rstrip("/")
+      import tensorflow as tf
+      tf.logging.info("Creating variable %s" % unique_var_name)
+      tf.logging.info("Previous name was %s" % kwargs["name"])
       # pylint: disable=protected-access
       collective_instance_key = self._collective_keys.get_instance_key(
           key_id=unique_var_name)

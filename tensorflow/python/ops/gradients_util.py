@@ -523,6 +523,9 @@ def _GradientsHelper(ys,
       assert isinstance(curr_graph, framework_function._FuncGraph)  # pylint: disable=protected-access
       curr_graph = curr_graph._outer_graph  # pylint: disable=protected-access
 
+  import tensorflow as tf
+  tf.logging.info("Gradients helper (%s), xs are = %s" % (len(xs), xs))
+
   ys = _AsList(ys)
   xs = _AsList(xs)
   stop_gradients = [] if stop_gradients is None else _AsList(stop_gradients)
@@ -572,6 +575,7 @@ def _GradientsHelper(ys,
     grads = {}
 
     # Add the initial gradients for the ys.
+    tf.logging.info("Gradients helper (%s), grad_ys are = %s" % (len(grad_ys), grad_ys))
     for y, grad_y in zip(ys, grad_ys):
       _SetGrad(grads, y, grad_y)
 
@@ -667,6 +671,8 @@ def _GradientsHelper(ys,
               else:
                 out_grads[i] = control_flow_state.ZerosLikeOutsideLoop(op, i)
           with ops.name_scope(op.name + "_grad"):
+            tf.logging.info("Gradients helper, op.name = %s" % op.name)
+
             # pylint: disable=protected-access
             with src_graph._original_op(op):
               # pylint: enable=protected-access
@@ -721,6 +727,7 @@ def _GradientsHelper(ys,
 
   if loop_state:
     loop_state.PostProcessing()
+  tf.logging.info("Gradient helper, final grads (%s): %s" % (len(grads), grads))
   return [_GetGrad(grads, x, unconnected_gradients) for x in xs]
 
 
