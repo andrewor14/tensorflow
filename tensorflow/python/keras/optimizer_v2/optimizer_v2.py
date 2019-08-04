@@ -429,6 +429,11 @@ class OptimizerV2(trackable.Trackable):
     grads_and_vars = _filter_grads(grads_and_vars)
     var_list = [v for (_, v) in grads_and_vars]
 
+    import tensorflow as tf
+    import traceback
+    tf.logging.info("APPLY GRADIENTS STACK TRACE there are %s gradients" % len(var_list))
+    traceback.print_stack()
+
     with backend.name_scope(self._scope_ctx):
       # Create iteration if necessary.
       with ops.init_scope():

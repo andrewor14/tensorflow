@@ -42,9 +42,10 @@ static void LogError(const Status& status, const char* filename, int line,
                      int log_severity, bool should_log_stack_trace) {
   if (TF_PREDICT_TRUE(log_severity != tensorflow::NUM_SEVERITIES)) {
     string stack_trace;
-    if (should_log_stack_trace) {
-      stack_trace = absl::StrCat("\n", tensorflow::CurrentStackTrace());
-    }
+    //if (should_log_stack_trace) {
+    //  stack_trace = absl::StrCat("\n", tensorflow::CurrentStackTrace());
+    //}
+    stack_trace = absl::StrCat("\n", tensorflow::CurrentStackTrace());
     switch (log_severity) {
       case tensorflow::INFO:
         LOG(INFO) << status << stack_trace;

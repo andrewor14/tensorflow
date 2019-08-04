@@ -20,6 +20,7 @@ from __future__ import division
 from __future__ import print_function
 
 import collections
+import os
 
 import numpy as np
 
@@ -256,6 +257,34 @@ def _process_single_batch(model,
         grads = tape.gradient(scaled_total_loss, model.trainable_weights)
         if loss_scale is not None:
           grads = loss_scale_optimizer.unscale_grads(grads, loss_scale)
+        # Use horovod to average the gradients
+        if os.getenv("USE_HOROVOD", "").lower() == "true":
+          import tensorflow as tf
+          allreduce_mode = os.getenv("AUTOSCALING_ALLREDUCE_MODE", "").lower()
+          if allreduce_mode == "":
+            tf.logging.info("Not doing any horovod allreduce")
+            print("Not doing any horovod allreduce")
+          else:
+            import horovod.tensorflow as hvd
+            my_rank = tf.constant(hvd.rank())
+            my_rank = tf.Print(my_rank, [my_rank], "Testing horovod, my rank = ")
+            average_rank = hvd.allreduce(my_rank)
+            average_rank = tf.Print(average_rank, [average_rank], "Testing horovod, average rank =")
+            with tf.control_dependencies([average_rank]):
+              grads[0] = tf.Print(grads[0], [grads[0]], "RIGHT BEFORE horovod allreduce")
+              tf.logging.info("Doing horovod allreduce hvd.size = %s, executing eagerly? %s" %\
+                (hvd.size(), tf.executing_eagerly()))
+              if allreduce_mode == "real":
+                tf.logging.info("Doing real horovod allreduce")
+                print("Doing real horovod allreduce")
+                grads = [hvd.allreduce(grad) for grad in grads]
+              elif allreduce_mode == "fake":
+                tf.logging.info("Doing fake horovod allreduce")
+                print("Doing fake horovod allreduce")
+                grads[0] = grads[0] - grads[0] + hvd.allreduce(tf.constant(hvd.rank(), dtype=grads[0].dtype))
+              else:
+                raise ValueError("Unknown allreduce mode: %s" % allreduce_mode)
+              grads[0] = tf.Print(grads[0], [grads[0]], "RIGHT AFTER horovod allreduce")
         model.optimizer.apply_gradients(zip(grads,
                                             model.trainable_weights))
     return outs, total_loss, output_losses, masks

@@ -269,8 +269,8 @@ def compute_field_dict(op, strip_file_prefix=""):
   """
   frame = _get_defining_frame_from_op(op)
   filename = frame[tf_stack.TB_FILENAME]
-  if filename.startswith(strip_file_prefix):
-    filename = filename[len(strip_file_prefix):]
+  #if filename.startswith(strip_file_prefix):
+  #  filename = filename[len(strip_file_prefix):]
   lineno = frame[tf_stack.TB_LINENO]
   defined_at = " (defined at %s:%d)" % (filename, lineno)
   colocation_summary = _compute_colocation_summary_from_op(op)

@@ -232,10 +232,11 @@ def make_template_internal(name_,
 
 def _skip_common_stack_elements(stacktrace, base_case):
   """Skips items that the target stacktrace shares with the base stacktrace."""
-  for i, (trace, base) in enumerate(zip(stacktrace, base_case)):
-    if trace != base:
-      return stacktrace[i:]
-  return stacktrace[-1:]
+  return stacktrace
+  #for i, (trace, base) in enumerate(zip(stacktrace, base_case)):
+  #  if trace != base:
+  #    return stacktrace[i:]
+  #return stacktrace[-1:]
 
 
 class Template(trackable.Trackable):
