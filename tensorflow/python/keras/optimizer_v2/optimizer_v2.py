@@ -445,14 +445,10 @@ class OptimizerV2(trackable.Trackable):
 
   def _distributed_apply(self, distribution, grads_and_vars, name):
     """`apply_gradients` using a `DistributionStrategy`."""
-    if os.getenv("BYPASS_DISTRIBUTION_STRATEGY_ALLREDUCE", "").lower() != "true":
-      reduced_grads = distribution.extended.batch_reduce_to(
-          ds_reduce_util.ReduceOp.SUM, grads_and_vars)
-      var_list = [v for _, v in grads_and_vars]
-      grads_and_vars = zip(reduced_grads, var_list)
-    else:
-      tf.compat.v1.logging.info("Bypassing distribution strategy allreduce in %s" %\
-        self.__class__.__name__)
+    reduced_grads = distribution.extended.batch_reduce_to(
+        ds_reduce_util.ReduceOp.SUM, grads_and_vars)
+    var_list = [v for _, v in grads_and_vars]
+    grads_and_vars = zip(reduced_grads, var_list)
 
     def apply_grad_to_update_var(var, grad):
       """Apply gradient to variable."""

@@ -992,10 +992,6 @@ class CollectiveAllReduce(CrossDeviceOps):
     return self._num_workers
 
   def reduce_implementation(self, reduce_op, per_replica_value, destinations):
-    if os.getenv("BYPASS_DISTRIBUTION_STRATEGY_ALLREDUCE", "").lower() == "true":
-      import tensorflow as tf
-      tf.compat.v1.logging.warn("Calling reduce_implementation when bypassing "\
-        "distribution strategy's allreduce")
     all_reduced = self._batch_all_reduce(reduce_op, [per_replica_value])[0]
     device_map, logical_device = get_device_map_from(destinations)
     if (all_reduced.device_map is device_map and
@@ -1015,10 +1011,6 @@ class CollectiveAllReduce(CrossDeviceOps):
     return value_lib.Mirrored(device_map, index, logical_device)
 
   def batch_reduce_implementation(self, reduce_op, value_destination_pairs):
-    if os.getenv("BYPASS_DISTRIBUTION_STRATEGY_ALLREDUCE", "").lower() == "true":
-      import tensorflow as tf
-      tf.compat.v1.logging.warn("Calling batch_reduce_implementation when bypassing"\
-        "distribution strategy's allreduce (%s)" % len(value_destination_pairs))
     all_devices_match = _all_devices_match(value_destination_pairs)
     if all_devices_match:
       return self._batch_all_reduce(reduce_op,

@@ -20,9 +20,11 @@ from __future__ import division
 from __future__ import print_function
 
 import collections
+import os
 
 import numpy as np
 
+import tensorflow as tf
 from tensorflow.python.eager.backprop import GradientTape
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import tensor_util
@@ -256,6 +258,20 @@ def _process_single_batch(model,
         grads = tape.gradient(scaled_total_loss, model.trainable_weights)
         if loss_scale is not None:
           grads = loss_scale_optimizer.unscale_grads(grads, loss_scale)
+        # Optionally use horovod to average the gradients
+        if os.getenv("USE_HOROVOD", "").lower() == "true":
+          if not tf.executing_eagerly():
+            raise ValueError("Autoscaling with horovod currently only works with eager mode")
+          import horovod.tensorflow as hvd
+          def pretty_print(grad): return tf.reshape(grad, [-1])[:5].numpy().tolist()
+          verbose = os.getenv("AUTOSCALING_HOROVOD_VERBOSE", "").lower() == "true"
+          if verbose:
+            tf.logging.info("Averaging ranks with horovod, size = %s" % hvd.size())
+            tf.logging.info("Average rank = %s" % hvd.allreduce(tf.constant(hvd.rank())))
+            tf.logging.info("First gradient before horovod allreduce: %s ..." % pretty_print(grads[0]))
+          grads = [hvd.allreduce(grad) for grad in grads]
+          if verbose:
+            tf.logging.info("First gradient after horovod allreduce: %s ..." % pretty_print(grads[0]))
         model.optimizer.apply_gradients(zip(grads,
                                             model.trainable_weights))
     return outs, total_loss, output_losses, masks
