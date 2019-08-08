@@ -21,6 +21,7 @@ from __future__ import print_function
 import collections
 import json
 import numpy as np
+import os
 
 from tensorflow.python import tf2
 from tensorflow.python.data.ops import dataset_ops
@@ -1970,6 +1971,13 @@ class Model(network.Network):
       with K.get_graph().as_default():
         with K.name_scope('training'):
           # Training updates
+          if os.getenv("USE_HOROVOD", "") == "true":
+            import horovod.tensorflow.keras as hvd
+            import tensorflow as tf
+            from autoscaling.agent import AUTOSCALING_MPI_COMMUNICATOR
+            tf.logging.info("Initializing horovod with communicator %s" % AUTOSCALING_MPI_COMMUNICATOR)
+            hvd.init(AUTOSCALING_MPI_COMMUNICATOR)
+            self.optimizer = hvd.DistributedOptimizer(self.optimizer)
           updates = self.optimizer.get_updates(
               params=self._collected_trainable_weights, loss=self.total_loss)
       # Unconditional updates
