@@ -1973,10 +1973,6 @@ class Model(network.Network):
           # Training updates
           if os.getenv("USE_HOROVOD", "") == "true":
             import horovod.tensorflow.keras as hvd
-            import tensorflow as tf
-            from autoscaling.agent import AUTOSCALING_MPI_COMMUNICATOR
-            tf.logging.info("Initializing horovod with communicator %s" % AUTOSCALING_MPI_COMMUNICATOR)
-            hvd.init(AUTOSCALING_MPI_COMMUNICATOR)
             self.optimizer = hvd.DistributedOptimizer(self.optimizer)
           updates = self.optimizer.get_updates(
               params=self._collected_trainable_weights, loss=self.total_loss)
