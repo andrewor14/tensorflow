@@ -260,18 +260,17 @@ def _process_single_batch(model,
           grads = loss_scale_optimizer.unscale_grads(grads, loss_scale)
         # Optionally use horovod to average the gradients
         if os.getenv("USE_HOROVOD", "").lower() == "true":
-          if not tf.executing_eagerly():
-            raise ValueError("Autoscaling with horovod currently only works with eager mode")
           import horovod.tensorflow as hvd
-          def pretty_print(grad): return tf.reshape(grad, [-1])[:5].numpy().tolist()
+          tf.logging.info("Averaging ranks with horovod, size = %s" % hvd.size())
           verbose = os.getenv("AUTOSCALING_HOROVOD_VERBOSE", "").lower() == "true"
           if verbose:
-            tf.logging.info("Averaging ranks with horovod, size = %s" % hvd.size())
-            tf.logging.info("Average rank = %s" % hvd.allreduce(tf.constant(hvd.rank())))
-            tf.logging.info("First gradient before horovod allreduce: %s ..." % pretty_print(grads[0]))
-          grads = [hvd.allreduce(grad) for grad in grads]
+            average_rank = hvd.allreduce(tf.constant(hvd.rank()))
+            average_rank = tf.Print(average_rank, [average_rank], "Average rank: ")
+            grads[0] = tf.Print(grads[0], [grads[0]], "First gradient before horovod allreduce: ")
+          with tf.control_dependencies([average_rank] if verbose else []):
+            grads = [hvd.allreduce(grad) for grad in grads]
           if verbose:
-            tf.logging.info("First gradient after horovod allreduce: %s ..." % pretty_print(grads[0]))
+            grads[0] = tf.Print(grads[0], [grads[0]], "First gradient after horovod allreduce: ")
         model.optimizer.apply_gradients(zip(grads,
                                             model.trainable_weights))
     return outs, total_loss, output_losses, masks
