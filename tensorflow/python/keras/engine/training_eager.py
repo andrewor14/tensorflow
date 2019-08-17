@@ -261,14 +261,11 @@ def _process_single_batch(model,
         # Optionally use horovod to average the gradients
         if os.getenv("USE_HOROVOD", "").lower() == "true":
           import horovod.tensorflow as hvd
-          tf.logging.info("Averaging ranks with horovod, size = %s" % hvd.size())
           verbose = os.getenv("AUTOSCALING_HOROVOD_VERBOSE", "").lower() == "true"
           if verbose:
-            average_rank = hvd.allreduce(tf.constant(hvd.rank()))
-            average_rank = tf.Print(average_rank, [average_rank], "Average rank: ")
+            tf.logging.info("Averaging gradients with horovod (size %s)" % hvd.size())
             grads[0] = tf.Print(grads[0], [grads[0]], "First gradient before horovod allreduce: ")
-          with tf.control_dependencies([average_rank] if verbose else []):
-            grads = [hvd.allreduce(grad) for grad in grads]
+          grads = [hvd.allreduce(grad) for grad in grads]
           if verbose:
             grads[0] = tf.Print(grads[0], [grads[0]], "First gradient after horovod allreduce: ")
         model.optimizer.apply_gradients(zip(grads,
