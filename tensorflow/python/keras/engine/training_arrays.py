@@ -276,14 +276,6 @@ def model_iteration(model,
 
       step = 0
       while step < target_steps:
-
-        # Create a new function to accommodate changes in portions of the graph
-        from autoscaling import autoscaling_helper
-        if autoscaling_helper.SHOULD_REFRESH_FUNCTION:
-          autoscaling_helper.SHOULD_REFRESH_FUNCTION = False
-          model._distributed_function_cache.clear()
-          f = _make_execution_function(model, mode)
-
         batch_logs = {'batch': step, 'size': 1}
         callbacks._call_batch_hook(mode, 'begin', step, batch_logs)
         progbar.on_batch_begin(step, batch_logs)
