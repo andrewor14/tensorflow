@@ -872,12 +872,13 @@ class Model(network.Network):
           batch. If `False`, the metrics will be statefully accumulated across
           batches.
 
-    Returns:
-        Scalar training loss
-        (if the model has a single output and no metrics)
-        or list of scalars (if the model has multiple outputs
-        and/or metrics). The attribute `model.metrics_names` will give you
-        the display labels for the scalar outputs.
+    Returns a 2-tuple:
+      (1) Scalar training loss
+          (if the model has a single output and no metrics)
+          or list of scalars (if the model has multiple outputs
+          and/or metrics). The attribute `model.metrics_names` will give you
+          the display labels for the scalar outputs.
+      (2) Gradients, only when running eagerly or with a distribution strategy
 
     Raises:
       ValueError: In case of invalid user-provided arguments.
@@ -899,8 +900,9 @@ class Model(network.Network):
     # at this point because of the check above.  `train_on_batch` is being run
     # for each replica by `self._distribution_strategy` and the same code path
     # as Eager is expected to be taken.
+    grads = None
     if self.run_eagerly or self._distribution_strategy:
-      outputs = training_eager.train_on_batch(
+      outputs, grads = training_eager.train_on_batch(
           self,
           x,
           y,
@@ -922,7 +924,11 @@ class Model(network.Network):
 
     if len(outputs) == 1:
       return outputs[0]
-    return outputs
+
+    if grads is not None:
+      return outputs, grads
+    else:
+      return outputs
 
   def test_on_batch(self, x, y=None, sample_weight=None, reset_metrics=True):
     """Test the model on a single batch of samples.

@@ -19,10 +19,12 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import os
 import functools
 
 import numpy as np
 
+import tensorflow as tf
 from tensorflow.python.data.ops import dataset_ops
 from tensorflow.python.data.ops import iterator_ops
 from tensorflow.python.eager import context
@@ -120,6 +122,8 @@ def model_iteration(model,
   Raises:
       ValueError: in case of invalid arguments.
   """
+  from autoscaling import autoscaling_helper
+
   # Backwards compatibility.
   if 'steps' in kwargs:
     steps_per_epoch = kwargs.pop('steps')
@@ -164,6 +168,14 @@ def model_iteration(model,
     # leads to OOM errors eventually.
     ins = inputs
   else:
+    if model._distribution_strategy is not None and\
+        isinstance(inputs, (dataset_ops.DatasetV1, dataset_ops.DatasetV2)):
+      inputs = distributed_training_utils.get_iterator(
+        inputs, model._distribution_strategy)
+    # Use a buffered iterator to dynamically adjust batch size
+    inputs = autoscaling_helper.BufferedIterator(\
+      inputs, autoscaling_helper.LOCAL_BATCH_SIZE)
+    autoscaling_helper.LOCAL_BATCH_SIZE = None
     ins = _prepare_feed_values(model, inputs, targets, sample_weights, mode)
     # `ins` is a function when a distribute strategy is used in Eager mode.  In
     # that case `is_dataset` is True.  The code branches that have requirements
@@ -185,6 +197,12 @@ def model_iteration(model,
   # function we recompile the metrics based on the updated
   # sample_weight_mode value.
   f = _make_execution_function(model, mode)
+
+  # Function for applying gradients, to be called after `f` has been called
+  @tf.function
+  def apply_gradients(grads):
+    func = lambda g: model.optimizer.apply_gradients(zip(g, model.trainable_weights))
+    model._distribution_strategy.experimental_run_v2(func, args=(grads,))
 
   # Prepare validation data. Hold references to the iterator and the input list
   # to properly reinitialize and reuse in multiple validation passes.
@@ -252,9 +270,11 @@ def model_iteration(model,
   callbacks._call_begin_hook(mode)
   progbar.on_train_begin()
 
+  initial_step = 0
   initial_epoch = model._maybe_load_initial_epoch_from_ckpt(initial_epoch, mode)
 
-  for epoch in range(initial_epoch, epochs):
+  epoch = initial_epoch
+  while epoch < epochs:
     if callbacks.model.stop_training:
       break
 
@@ -274,24 +294,41 @@ def model_iteration(model,
         # Loop over dataset for the specified number of steps.
         target_steps = steps_per_epoch
 
-      step = 0
+      step = initial_step
       while step < target_steps:
+        if autoscaling_helper.STEP_NUMBER is not None and\
+            autoscaling_helper.EPOCH_NUMBER is not None:
+          break
+
         batch_logs = {'batch': step, 'size': 1}
         callbacks._call_batch_hook(mode, 'begin', step, batch_logs)
         progbar.on_batch_begin(step, batch_logs)
 
         # Get outputs.
         try:
+          # Listen for changes in local batch sizes
+          local_batch_size = autoscaling_helper.LOCAL_BATCH_SIZE
+          if local_batch_size is not None and\
+              isinstance(inputs, autoscaling_helper.BufferedIterator):
+            tf.logging.info("Updating local batch size to %s" % local_batch_size)
+            inputs.set_buffer_size(local_batch_size)
+            autoscaling_helper.LOCAL_BATCH_SIZE = None
           # `ins` can be callable in tf.distribute.Strategy + eager case.
           # TODO(b/134179782):  Simplify this condition when cloning never
           # happens.
+          use_horovod = os.getenv("USE_HOROVOD", "") == "true"
           if not callable(ins) or (
-              model._distribution_strategy and
+              model._distribution_strategy and\
+              not use_horovod and\
               not distributed_training_utils.is_distributing_by_cloning(model)):
             actual_inputs = ins
           else:
             actual_inputs = ins()
-          batch_outs = f(actual_inputs)
+          batch_outs, grads = f(*actual_inputs)
+          # Apply gradients computed in `f` to the model
+          if use_horovod:
+            grads = autoscaling_helper.HOROVOD_ALLREDUCE_FUNCTION(grads)
+          apply_gradients(grads)
         except errors.OutOfRangeError:
           if is_dataset:
             # The dataset passed by the user ran out of batches.
@@ -380,7 +417,7 @@ def model_iteration(model,
         progbar.on_batch_begin(batch_index, batch_logs)
 
         # Get outputs.
-        batch_outs = f(ins_batch)
+        batch_outs, _ = f(ins_batch)
         if not isinstance(batch_outs, list):
           batch_outs = [batch_outs]
 
@@ -443,6 +480,17 @@ def model_iteration(model,
     if reset_dataset_after_each_epoch and epoch < epochs - 1:
       _reinitialize_iterator(input_iterator, model._distribution_strategy)
 
+    # Maybe reset step number and epoch number
+    if autoscaling_helper.STEP_NUMBER is not None and\
+        autoscaling_helper.EPOCH_NUMBER is not None:
+      initial_step = autoscaling_helper.STEP_NUMBER
+      epoch = autoscaling_helper.EPOCH_NUMBER
+      tf.logging.info("Restoring step to %s and epoch to %s" % (initial_step, epoch))
+      autoscaling_helper.EPOCH_NUMBER = None
+      autoscaling_helper.STEP_NUMBER = None
+    else:
+      initial_step = 0
+      epoch += 1
   callbacks._call_end_hook(mode)
 
   if model._distribution_strategy:
@@ -497,10 +545,6 @@ def _prepare_feed_values(model, inputs, targets, sample_weights, mode):
     Feed values for the model in the given mode.
   """
   if model._distribution_strategy:
-    if isinstance(inputs, (dataset_ops.DatasetV1, dataset_ops.DatasetV2)):
-      inputs = distributed_training_utils.get_iterator(
-          inputs, model._distribution_strategy)
-
     def get_distributed_inputs():
       return distributed_training_utils._prepare_feed_values(
           model, inputs, targets, sample_weights, mode)

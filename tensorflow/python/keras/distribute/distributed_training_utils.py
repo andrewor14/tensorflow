@@ -22,6 +22,7 @@ import functools
 
 import numpy as np
 
+import tensorflow as tf
 from tensorflow.python.data.ops import dataset_ops
 from tensorflow.python.data.ops import iterator_ops
 from tensorflow.python.distribute import distribute_coordinator_context as dc_context
@@ -794,23 +795,33 @@ def _make_execution_function_without_cloning(model, mode):
     per_replica_function = _make_replica_execution_function(model, mode)
 
     @def_function.function
-    def distributed_function(input_fn):
+    def distributed_function(x, y, sample_weights):
       """A single step of the distributed execution across replicas."""
-      x, y, sample_weights = input_fn()
+      # Filter out samples that are all zeros
+      mask_x = tf.stack([tf.count_nonzero(t) > 0 for t in tf.unstack(x)])
+      mask_y = tf.stack([tf.count_nonzero(t) > 0 for t in tf.unstack(y)])
+      x = tf.boolean_mask(x, mask_x)
+      y = tf.boolean_mask(y, mask_y)
+
       # Call `Model.{train,test,predict}_on_batch` on every replica passing
       # PerReplicas as arguments.  On every replica inside this call, each
       # PerReplica object will return the value for that replica.  The outputs
       # are PerReplicas too.
-      outputs = strategy.experimental_run_v2(
+      outputs, grads = strategy.experimental_run_v2(
           per_replica_function, args=(x, y, sample_weights))
       # Out of PerReplica outputs reduce or pick values to return.
       all_outputs = unwrap_outputs(
           strategy, outputs, with_loss_tensor=(mode != ModeKeys.PREDICT))
-      return all_outputs
+      all_grads = unwrap_outputs(
+          strategy, grads, with_loss_tensor=(mode != ModeKeys.PREDICT))
+      return all_outputs, all_grads
 
-    def execution_function(input_fn):
+    def execution_function(x, y, sample_weights):
       # `numpy` translates Tensors to values in Eager mode.
-      return [out.numpy() for out in distributed_function(input_fn)]
+      outputs, grads = distributed_function(x, y, sample_weights)
+      outputs = [out.numpy() for out in outputs]
+      grads = [grad.numpy() for grad in grads]
+      return outputs, grads
     return execution_function
 
 
