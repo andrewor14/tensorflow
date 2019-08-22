@@ -324,11 +324,14 @@ def model_iteration(model,
             actual_inputs = ins
           else:
             actual_inputs = ins()
-          batch_outs, grads = f(*actual_inputs)
-          # Apply gradients computed in `f` to the model
-          if use_horovod:
-            grads = autoscaling_helper.HOROVOD_ALLREDUCE_FUNCTION(grads)
-          apply_gradients(grads)
+          # If we are training, then average the gradients and apply them to the model
+          if mode == ModeKeys.TRAIN:
+            batch_outs, grads = f(*actual_inputs)
+            if use_horovod:
+              grads = autoscaling_helper.HOROVOD_ALLREDUCE_FUNCTION(grads)
+            apply_gradients(grads)
+          else:
+            batch_outs, _ = f(*actual_inputs)
         except errors.OutOfRangeError:
           if is_dataset:
             # The dataset passed by the user ran out of batches.
