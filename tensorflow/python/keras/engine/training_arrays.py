@@ -19,10 +19,12 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import os
 import functools
 
 import numpy as np
 
+import tensorflow as tf
 from tensorflow.python.data.ops import dataset_ops
 from tensorflow.python.data.ops import iterator_ops
 from tensorflow.python.eager import context
@@ -120,6 +122,8 @@ def model_iteration(model,
   Raises:
       ValueError: in case of invalid arguments.
   """
+  from autoscaling import autoscaling_helper
+
   # Backwards compatibility.
   if 'steps' in kwargs:
     steps_per_epoch = kwargs.pop('steps')
@@ -164,6 +168,14 @@ def model_iteration(model,
     # leads to OOM errors eventually.
     ins = inputs
   else:
+    if model._distribution_strategy is not None and\
+        isinstance(inputs, (dataset_ops.DatasetV1, dataset_ops.DatasetV2)):
+      inputs = distributed_training_utils.get_iterator(
+        inputs, model._distribution_strategy)
+    # Use a buffered iterator to dynamically adjust batch size
+    inputs = autoscaling_helper.BufferedIterator(\
+      inputs, autoscaling_helper.LOCAL_BATCH_SIZE)
+    autoscaling_helper.LOCAL_BATCH_SIZE = None
     ins = _prepare_feed_values(model, inputs, targets, sample_weights, mode)
     # `ins` is a function when a distribute strategy is used in Eager mode.  In
     # that case `is_dataset` is True.  The code branches that have requirements
@@ -185,6 +197,12 @@ def model_iteration(model,
   # function we recompile the metrics based on the updated
   # sample_weight_mode value.
   f = _make_execution_function(model, mode)
+
+  # Function for applying gradients, to be called after `f` has been called
+  @tf.function
+  def apply_gradients(grads):
+    func = lambda g: model.optimizer.apply_gradients(zip(g, model.trainable_weights))
+    model._distribution_strategy.experimental_run_v2(func, args=(grads,))
 
   # Prepare validation data. Hold references to the iterator and the input list
   # to properly reinitialize and reuse in multiple validation passes.
@@ -282,6 +300,15 @@ def model_iteration(model,
 
         # Get outputs.
         try:
+          # Listen for changes in local batch sizes
+          if autoscaling_helper.LOCAL_BATCH_SIZE is not None and\
+              isinstance(inputs, autoscaling_helper.BufferedIterator):
+            tf.logging.info("Updating local batch size to %s" %\
+              autoscaling_helper.LOCAL_BATCH_SIZE)
+            inputs.set_buffer_size(autoscaling_helper.LOCAL_BATCH_SIZE)
+            #ins = _prepare_feed_values(model, inputs, targets, sample_weights, mode)
+            autoscaling_helper.LOCAL_BATCH_SIZE = None
+
           # `ins` can be callable in tf.distribute.Strategy + eager case.
           # TODO(b/134179782):  Simplify this condition when cloning never
           # happens.
@@ -291,7 +318,21 @@ def model_iteration(model,
             actual_inputs = ins
           else:
             actual_inputs = ins()
-          batch_outs = f(actual_inputs)
+          actual_inputs = ins()
+          tf.logging.info("Inputs class = %s" % actual_inputs.__class__.__name__)
+          #tf.logging.info("len(Inputs) = %s" % len(actual_inputs))
+          #tf.logging.info("Inputs[0] class = %s" % actual_inputs[0].__class__.__name__)
+          #tf.logging.info("Inputs[1] class = %s" % actual_inputs[1].__class__.__name__)
+          #tf.logging.info("Inputs[2] class = %s" % actual_inputs[2].__class__.__name__)
+          tf.logging.info("Inputs[0] shape = %s" % actual_inputs[0].shape)
+          tf.logging.info("Inputs[1] shape = %s" % actual_inputs[1].shape)
+          tf.logging.info("Inputs[2] = %s" % actual_inputs[2])
+          batch_outs, grads = f(*actual_inputs)
+
+          # Apply gradients computed in `f` to the model
+          if os.getenv("USE_HOROVOD", "") == "true":
+            grads = autoscaling_helper.HOROVOD_ALLREDUCE_FUNCTION(grads)
+          apply_gradients(grads)
         except errors.OutOfRangeError:
           if is_dataset:
             # The dataset passed by the user ran out of batches.
@@ -380,7 +421,7 @@ def model_iteration(model,
         progbar.on_batch_begin(batch_index, batch_logs)
 
         # Get outputs.
-        batch_outs = f(ins_batch)
+        batch_outs, _ = f(ins_batch)
         if not isinstance(batch_outs, list):
           batch_outs = [batch_outs]
 
@@ -497,10 +538,6 @@ def _prepare_feed_values(model, inputs, targets, sample_weights, mode):
     Feed values for the model in the given mode.
   """
   if model._distribution_strategy:
-    if isinstance(inputs, (dataset_ops.DatasetV1, dataset_ops.DatasetV2)):
-      inputs = distributed_training_utils.get_iterator(
-          inputs, model._distribution_strategy)
-
     def get_distributed_inputs():
       return distributed_training_utils._prepare_feed_values(
           model, inputs, targets, sample_weights, mode)

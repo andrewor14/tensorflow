@@ -222,7 +222,7 @@ def _process_single_batch(model,
 
   Returns:
       output of the model, total loss, the loss and the mask
-      associated with each output.
+      associated with each output, and gradients.
 
   Raises:
       ValueError: If the model has no loss to optimize.
@@ -258,19 +258,7 @@ def _process_single_batch(model,
         grads = tape.gradient(scaled_total_loss, model.trainable_weights)
         if loss_scale is not None:
           grads = loss_scale_optimizer.unscale_grads(grads, loss_scale)
-        # Optionally use horovod to average the gradients
-        if os.getenv("USE_HOROVOD", "").lower() == "true":
-          import horovod.tensorflow as hvd
-          verbose = os.getenv("AUTOSCALING_HOROVOD_VERBOSE", "").lower() == "true"
-          if verbose:
-            tf.logging.info("Averaging gradients with horovod (size %s)" % hvd.size())
-            grads[0] = tf.Print(grads[0], [grads[0]], "First gradient before horovod allreduce: ")
-          grads = [hvd.allreduce(grad) for grad in grads]
-          if verbose:
-            grads[0] = tf.Print(grads[0], [grads[0]], "First gradient after horovod allreduce: ")
-        model.optimizer.apply_gradients(zip(grads,
-                                            model.trainable_weights))
-    return outs, total_loss, output_losses, masks
+    return outs, total_loss, output_losses, masks, grads
 
 
 def train_on_batch(model,
@@ -289,7 +277,7 @@ def train_on_batch(model,
         loss values.
 
   Returns:
-      total loss and the loss associated with each output.
+      total loss, the loss associated with each output, and gradients.
   """
   if isinstance(inputs, collections.Sequence):
     if len(inputs) and tensor_util.is_tensor(inputs[0]):
@@ -309,7 +297,7 @@ def train_on_batch(model,
         if val is not None else None for val in sample_weights
     ]
 
-  outs, total_loss, output_losses, masks = (
+  outs, total_loss, output_losses, masks, grads = (
       _process_single_batch(
           model,
           inputs,
@@ -324,7 +312,7 @@ def train_on_batch(model,
   total_loss = nest.flatten(total_loss)
   results = total_loss + output_losses + metrics_results
 
-  return [_non_none_constant_value(v) for v in results]
+  return [_non_none_constant_value(v) for v in results], grads
 
 
 def _non_none_constant_value(v):
