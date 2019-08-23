@@ -175,7 +175,6 @@ def model_iteration(model,
     # Use a buffered iterator to dynamically adjust batch size
     inputs = autoscaling_helper.BufferedIterator(\
       inputs, autoscaling_helper.LOCAL_BATCH_SIZE)
-    autoscaling_helper.LOCAL_BATCH_SIZE = None
     ins = _prepare_feed_values(model, inputs, targets, sample_weights, mode)
     # `ins` is a function when a distribute strategy is used in Eager mode.  In
     # that case `is_dataset` is True.  The code branches that have requirements
@@ -309,10 +308,10 @@ def model_iteration(model,
           # Listen for changes in local batch sizes
           local_batch_size = autoscaling_helper.LOCAL_BATCH_SIZE
           if local_batch_size is not None and\
-              isinstance(inputs, autoscaling_helper.BufferedIterator):
+              isinstance(inputs, autoscaling_helper.BufferedIterator) and\
+              inputs.buffer_size != local_batch_size:
             tf.logging.info("Updating local batch size to %s" % local_batch_size)
             inputs.set_buffer_size(local_batch_size)
-            autoscaling_helper.LOCAL_BATCH_SIZE = None
           # `ins` can be callable in tf.distribute.Strategy + eager case.
           # TODO(b/134179782):  Simplify this condition when cloning never
           # happens.
