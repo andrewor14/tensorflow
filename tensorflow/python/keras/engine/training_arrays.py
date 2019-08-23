@@ -324,14 +324,20 @@ def model_iteration(model,
             actual_inputs = ins
           else:
             actual_inputs = ins()
+          # Pass the buffer size into the function as an argument
+          # If there is no buffer size, just pass in 0 and it will be ignored
+          if isinstance(inputs, autoscaling_helper.BufferedIterator):
+            num_samples = tf.constant(inputs.buffer_size, dtype=tf.int32)
+          else:
+            num_samples = tf.constant(0, dtype=tf.int32)
           # If we are training, then average the gradients and apply them to the model
           if mode == ModeKeys.TRAIN:
-            batch_outs, grads = f(*actual_inputs)
+            batch_outs, grads = f(num_samples, *actual_inputs)
             if use_horovod:
               grads = autoscaling_helper.HOROVOD_ALLREDUCE_FUNCTION(grads)
             apply_gradients(grads)
           else:
-            batch_outs, _ = f(*actual_inputs)
+            batch_outs, _ = f(num_samples, *actual_inputs)
         except errors.OutOfRangeError:
           if is_dataset:
             # The dataset passed by the user ran out of batches.

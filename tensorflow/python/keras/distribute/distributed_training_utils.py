@@ -795,13 +795,15 @@ def _make_execution_function_without_cloning(model, mode):
     per_replica_function = _make_replica_execution_function(model, mode)
 
     @def_function.function
-    def distributed_function(x, y, sample_weights):
+    def distributed_function(num_samples, x, y, sample_weights):
       """A single step of the distributed execution across replicas."""
-      # Filter out samples that are all zeros
-      mask_x = tf.stack([tf.count_nonzero(t) > 0 for t in tf.unstack(x)])
-      mask_y = tf.stack([tf.count_nonzero(t) > 0 for t in tf.unstack(y)])
-      x = tf.boolean_mask(x, mask_x)
-      y = tf.boolean_mask(y, mask_y)
+      # If the caller is using dynamic batch sizes, then x and y may be padded
+      # to ensure the tensor shapes are fixed. In this case we need to extract
+      # the actual inputs using `num_samples`. If `num_samples` is 0, then we
+      # assume that the inputs were not padded.
+      if num_samples > 0:
+        x = x[:num_samples]
+        y = y[:num_samples]
 
       # Call `Model.{train,test,predict}_on_batch` on every replica passing
       # PerReplicas as arguments.  On every replica inside this call, each
@@ -816,9 +818,9 @@ def _make_execution_function_without_cloning(model, mode):
           strategy, grads, with_loss_tensor=(mode != ModeKeys.PREDICT))
       return all_outputs, all_grads
 
-    def execution_function(x, y, sample_weights):
+    def execution_function(num_samples, x, y, sample_weights):
       # `numpy` translates Tensors to values in Eager mode.
-      outputs, grads = distributed_function(x, y, sample_weights)
+      outputs, grads = distributed_function(num_samples, x, y, sample_weights)
       outputs = [out.numpy() for out in outputs]
       grads = [grad.numpy() for grad in grads]
       return outputs, grads
