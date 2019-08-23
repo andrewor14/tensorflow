@@ -809,20 +809,27 @@ def _make_execution_function_without_cloning(model, mode):
       # PerReplicas as arguments.  On every replica inside this call, each
       # PerReplica object will return the value for that replica.  The outputs
       # are PerReplicas too.
-      outputs, grads = strategy.experimental_run_v2(
-          per_replica_function, args=(x, y, sample_weights))
+      outputs = strategy.experimental_run_v2(
+        per_replica_function, args=(x, y, sample_weights))
+      grads = None
+      if isinstance(outputs, tuple) and len(outputs) == 2:
+        outputs, grads = outputs
       # Out of PerReplica outputs reduce or pick values to return.
       all_outputs = unwrap_outputs(
-          strategy, outputs, with_loss_tensor=(mode != ModeKeys.PREDICT))
-      all_grads = unwrap_outputs(
+        strategy, outputs, with_loss_tensor=(mode != ModeKeys.PREDICT))
+      if grads is not None:
+        all_grads = unwrap_outputs(
           strategy, grads, with_loss_tensor=(mode != ModeKeys.PREDICT))
+      else:
+        all_grads = None
       return all_outputs, all_grads
 
     def execution_function(num_samples, x, y, sample_weights):
       # `numpy` translates Tensors to values in Eager mode.
       outputs, grads = distributed_function(num_samples, x, y, sample_weights)
       outputs = [out.numpy() for out in outputs]
-      grads = [grad.numpy() for grad in grads]
+      if grads is not None:
+        grads = [grad.numpy() for grad in grads]
       return outputs, grads
     return execution_function
 
