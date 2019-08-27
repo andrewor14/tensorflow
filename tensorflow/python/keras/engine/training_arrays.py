@@ -19,8 +19,9 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import os
 import functools
+import os
+import time
 
 import numpy as np
 
@@ -302,6 +303,7 @@ def model_iteration(model,
         batch_logs = {'batch': step, 'size': 1}
         callbacks._call_batch_hook(mode, 'begin', step, batch_logs)
         progbar.on_batch_begin(step, batch_logs)
+        compute_elapsed = None
 
         # Get outputs.
         try:
@@ -331,7 +333,9 @@ def model_iteration(model,
             num_samples = tf.constant(0, dtype=tf.int32)
           # If we are training, then average the gradients and apply them to the model
           if mode == ModeKeys.TRAIN:
+            compute_start = time.time()
             batch_outs, grads = f(num_samples, *actual_inputs)
+            compute_elapsed = time.time() - compute_start
             if use_horovod:
               grads = autoscaling_helper.HOROVOD_ALLREDUCE_FUNCTION(grads)
             apply_gradients(grads)
@@ -384,6 +388,7 @@ def model_iteration(model,
 
         # Callbacks batch end.
         batch_logs = cbks.make_logs(model, batch_logs, batch_outs, mode)
+        batch_logs["compute_elapsed"] = compute_elapsed
         callbacks._call_batch_hook(mode, 'end', step, batch_logs)
         progbar.on_batch_end(step, batch_logs)
         step += 1
