@@ -456,6 +456,8 @@ def model_iteration(model,
     # Run the test loop every `validation_freq` epochs during training.
     if (do_validation and
         training_utils.should_run_validation(validation_freq, epoch) and
+        autoscaling_helper.STEP_NUMBER is None and
+        autoscaling_helper.EPOCH_NUMBER is None and
         not callbacks.model.stop_training):
 
       if model._compile_distribution:
