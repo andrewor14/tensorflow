@@ -273,6 +273,15 @@ def model_iteration(model,
   initial_step = 0
   initial_epoch = model._maybe_load_initial_epoch_from_ckpt(initial_epoch, mode)
 
+  # Step-wise loop.
+  if use_steps:
+    if steps_per_epoch is None:
+      # Loop over dataset until `OutOfRangeError` is raised.
+      target_steps = np.inf
+    else:
+      # Loop over dataset for the specified number of steps.
+      target_steps = steps_per_epoch
+
   epoch = initial_epoch
   while epoch < epochs:
     if callbacks.model.stop_training:
@@ -286,18 +295,11 @@ def model_iteration(model,
     progbar.on_epoch_begin(epoch, epoch_logs)
 
     if use_steps:
-      # Step-wise loop.
-      if steps_per_epoch is None:
-        # Loop over dataset until `OutOfRangeError` is raised.
-        target_steps = np.inf
-      else:
-        # Loop over dataset for the specified number of steps.
-        target_steps = steps_per_epoch
-
       step = initial_step
       while step < target_steps:
         if autoscaling_helper.STEP_NUMBER is not None and\
-            autoscaling_helper.EPOCH_NUMBER is not None:
+            autoscaling_helper.EPOCH_NUMBER is not None and\
+            autoscaling_helper.TARGET_STEPS is not None:
           break
 
         batch_logs = {'batch': step, 'size': 1}
@@ -458,6 +460,7 @@ def model_iteration(model,
         training_utils.should_run_validation(validation_freq, epoch) and
         autoscaling_helper.STEP_NUMBER is None and
         autoscaling_helper.EPOCH_NUMBER is None and
+        autoscaling_helper.TARGET_STEPS is None and
         not callbacks.model.stop_training):
 
       if model._compile_distribution:
@@ -497,12 +500,16 @@ def model_iteration(model,
 
     # Maybe reset step number and epoch number
     if autoscaling_helper.STEP_NUMBER is not None and\
-        autoscaling_helper.EPOCH_NUMBER is not None:
+        autoscaling_helper.EPOCH_NUMBER is not None and\
+        autoscaling_helper.TARGET_STEPS is not None:
       initial_step = autoscaling_helper.STEP_NUMBER
+      target_steps = autoscaling_helper.TARGET_STEPS
       epoch = autoscaling_helper.EPOCH_NUMBER
-      tf.logging.info("Restoring step to %s and epoch to %s" % (initial_step, epoch))
+      tf.logging.info("Restoring step to %s, target_steps to %s, and epoch to %s" %\
+        (initial_step, target_steps, epoch))
       autoscaling_helper.EPOCH_NUMBER = None
       autoscaling_helper.STEP_NUMBER = None
+      autoscaling_helper.TARGET_STEPS = None
     else:
       initial_step = 0
       epoch += 1
