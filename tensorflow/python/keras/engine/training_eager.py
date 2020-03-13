@@ -233,7 +233,7 @@ def _process_single_batch(model,
 
   Returns:
       output of the model, total loss, the loss and the mask
-      associated with each output.
+      associated with each output, and gradients computed in this batch.
 
   Raises:
       ValueError: If the model has no loss to optimize.
@@ -269,13 +269,12 @@ def _process_single_batch(model,
           if isinstance(model.optimizer,
                         loss_scale_optimizer.LossScaleOptimizer):
             grads = model.optimizer.get_unscaled_gradients(grads)
-          model.optimizer.apply_gradients(zip(grads, trainable_weights))
       else:
         logging.warning('The list of trainable weights is empty. Make sure that'
                         ' you are not setting model.trainable to False before '
                         'compiling the model.')
     model._set_trainable_state(current_trainable_state)
-    return outs, total_loss, output_losses, masks
+    return outs, total_loss, output_losses, masks, grads
 
 
 def train_on_batch(model,
@@ -294,14 +293,15 @@ def train_on_batch(model,
         loss values.
 
   Returns:
-      Dict with three items:
+      Dict with four items:
         'total_loss': list with a single tensor for overall loss,
         'output_losses': list of tensors for loss corresponding to each of the
           model output. Could be a empty list when model has only one output.
         'metrics': list of tensors for metric specified.
+        'grads': gradients computed in this batch.
   """
   inputs = training_utils.cast_to_model_input_dtypes(inputs, model)
-  outs, total_loss, output_losses, masks = (
+  outs, total_loss, output_losses, masks, grads = (
       _process_single_batch(
           model,
           inputs,
@@ -316,7 +316,8 @@ def train_on_batch(model,
   total_loss = nest.flatten(total_loss)
   return {'total_loss': total_loss,
           'output_losses': output_losses,
-          'metrics': metrics_results}
+          'metrics': metrics_results,
+          'grads': grads}
 
 
 def test_on_batch(model,

@@ -26,10 +26,10 @@ from __future__ import print_function
 import collections
 import functools
 
-from tensorflow.python.distribute import distribution_strategy_context
+from tensorflow.python.distribute import distribution_strategy_context, values
+from tensorflow.python.distribute.input_lib import DistributedIterator
 from tensorflow.python.eager import def_function
-from tensorflow.python.framework import dtypes
-from tensorflow.python.framework import tensor_util
+from tensorflow.python.framework import dtypes, ops, tensor_util
 from tensorflow.python.framework.ops import composite_tensor
 from tensorflow.python.keras import backend
 from tensorflow.python.keras.distribute import distributed_training_utils as dist_utils
@@ -62,15 +62,24 @@ def _make_execution_function(model, mode):
 
   def distributed_function(input_iterator):
     """A single step of the distributed execution across replicas."""
-    x, y, sample_weights = _prepare_feed_values(
-        model, input_iterator, mode)
+    # Convert `input_iterator` to a `PerReplica` value of individual iterators.
+    # We assume `input_iterator` to be an instance of `DistributedIterator`.
+    # We do this to allow each device to independently fetch the next batch.
+    if not isinstance(input_iterator, DistributedIterator):
+      raise ValueError("Expected input_iterator to be a DistributedIterator")
+    if len(input_iterator._iterators) != 1:
+      raise ValueError("Expected a single input iterator from CPU")
+    # DistributedIterator -> _SingleWorkerDatasetIterator -> MultiDeviceIterator -> IteratorV2
+    per_replica_iterators = input_iterator._iterators[0]._iterator._device_iterators
+    per_replica_iterators = values.regroup(input_iterator._input_workers.device_map, per_replica_iterators)
+
     # Call `Model.{train,test,predict}_on_batch` on every replica passing
     # PerReplicas as arguments.  On every replica inside this call, each
     # PerReplica object will return the value for that replica.  The outputs
     # are PerReplicas too.
     strategy = distribution_strategy_context.get_strategy()
     outputs = strategy.experimental_run_v2(
-        per_replica_function, args=(model, x, y, sample_weights))
+        per_replica_function, args=(model, per_replica_iterators, mode))
     # Out of PerReplica outputs reduce or pick values to return.
     all_outputs = dist_utils.unwrap_output_dict(
         strategy, outputs, mode)
@@ -143,19 +152,13 @@ def _get_input_from_iterator(iterator):
     sample_weights = None
   else:
     x, y, sample_weights = next_element
-
-  # Validate that all the elements in x and y are of the same type and shape.
-  dist_utils.validate_distributed_dataset_inputs(
-      distribution_strategy_context.get_strategy(), x, y, sample_weights)
   return x, y, sample_weights
 
 
 def _make_replica_execution_function(mode):
   """A single step of the distributed execution on a replica."""
-  if mode == ModeKeys.TRAIN:
-    func = train_on_batch
-  elif mode == ModeKeys.TEST:
-    func = test_on_batch
+  if mode == ModeKeys.TRAIN or mode == ModeKeys.TEST:
+    func = wrapped_execution_function
   else:
     def _predict_on_batch(model, x, y=None, sample_weights=None):
       del y, sample_weights
@@ -192,6 +195,26 @@ def _prepare_model_with_inputs(model, dataset):
   if target is not None:
     training_utils.prepare_sample_weight_modes(model._training_endpoints,
                                                model.sample_weight_mode)
+
+
+def wrapped_execution_function(model, input_iterator, mode, reset_metrics=True):
+  """
+  A wrapper around the underlying execution function that takes in the input iterator
+  instead of a single batch of input data.
+
+  This wrapper is intended to be called as a per replica function. It allows each replica
+  to process multiple batches, one after another, within the same function call.
+  """
+  x, y, sample_weights = _prepare_feed_values(model, input_iterator, mode)
+  if mode == ModeKeys.TRAIN:
+    outputs = train_on_batch(model, x, y, sample_weights, reset_metrics=reset_metrics)
+    grads = outputs['grads']
+    model.optimizer.apply_gradients(zip(grads, model.trainable_weights))
+    return outputs
+  elif mode == ModeKeys.TEST:
+    return test_on_batch(model, x, y, sample_weights, reset_metrics=reset_metrics)
+  else:
+    raise ValueError("Unexpected mode in wrapped_execution_function: %s" % mode)
 
 
 def train_on_batch(
