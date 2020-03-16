@@ -25,7 +25,9 @@ from __future__ import print_function
 
 import collections
 import functools
+import os
 
+import tensorflow as tf
 from tensorflow.python.distribute import distribution_strategy_context, values
 from tensorflow.python.distribute.input_lib import DistributedIterator
 from tensorflow.python.eager import def_function
@@ -205,16 +207,45 @@ def wrapped_execution_function(model, input_iterator, mode, reset_metrics=True):
   This wrapper is intended to be called as a per replica function. It allows each replica
   to process multiple batches, one after another, within the same function call.
   """
-  x, y, sample_weights = _prepare_feed_values(model, input_iterator, mode)
-  if mode == ModeKeys.TRAIN:
-    outputs = train_on_batch(model, x, y, sample_weights, reset_metrics=reset_metrics)
-    grads = outputs['grads']
-    model.optimizer.apply_gradients(zip(grads, model.trainable_weights))
-    return outputs
-  elif mode == ModeKeys.TEST:
-    return test_on_batch(model, x, y, sample_weights, reset_metrics=reset_metrics)
-  else:
-    raise ValueError("Unexpected mode in wrapped_execution_function: %s" % mode)
+  # TODO: pass this in through the function signature
+  num_virtual_nodes = int(os.getenv("NUM_VIRTUAL_NODES_PER_DEVICE") or 1)
+  aggregated_outputs = None
+  for i in range(num_virtual_nodes):
+    x, y, sample_weights = _prepare_feed_values(model, input_iterator, mode)
+    outputs = None
+    if mode == ModeKeys.TRAIN:
+      outputs = train_on_batch(model, x, y, sample_weights, reset_metrics=reset_metrics)
+    elif mode == ModeKeys.TEST:
+      outputs = test_on_batch(model, x, y, sample_weights, reset_metrics=reset_metrics)
+    else:
+      raise ValueError("Unexpected mode in wrapped_execution_function: %s" % mode)
+    # Convert all IndexedSlices to dense tensors
+    # TODO: find a more efficient way to handle this, e.g. processing them in place
+    if 'grads' in outputs:
+      for i, grad in enumerate(outputs['grads']):
+        if isinstance(grad, tf.IndexedSlices):
+          outputs['grads'][i] = tf.convert_to_tensor(grad)
+    # Aggregate temporary outputs according to `distributed_training_utils.unwrap_output_dict`:
+    #   - sum 'total_loss' and 'batch_size'
+    #   - ignore 'output_losses' because it is an empty list for many cases
+    #   - ignore 'metrics' because it seems to be the same across all replicas
+    #   - take the average of 'grads', which is fine if all workers have the same number
+    #     of virtual nodes
+    if aggregated_outputs is not None:
+      assert len(aggregated_outputs['total_loss']) == 1
+      aggregated_outputs['total_loss'][0] += outputs['total_loss'][0]
+      aggregated_outputs['batch_size'] += outputs['batch_size']
+      if 'grads' in aggregated_outputs:
+        for i in range(len(aggregated_outputs['grads'])):
+          aggregated_outputs['grads'][i] += outputs['grads'][i]
+    else:
+      aggregated_outputs = outputs
+  # Finish averaging gradients and update the model
+  if 'grads' in aggregated_outputs:
+    for i in range(len(aggregated_outputs['grads'])):
+      aggregated_outputs['grads'][i] /= num_virtual_nodes
+    model.optimizer.apply_gradients(zip(aggregated_outputs['grads'], model.trainable_weights))
+  return aggregated_outputs
 
 
 def train_on_batch(
