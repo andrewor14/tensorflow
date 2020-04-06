@@ -6,9 +6,9 @@ source build_flags.sh
 
 echo "Done configuring. Now running bazel build."
 
+OPS="--config=opt"
 if [[ "$TF_NEED_CUDA" == "1" ]]; then
-  time bazel build -c opt --config=cuda //tensorflow/tools/pip_package:build_pip_package
-else
-  time bazel build -c opt //tensorflow/tools/pip_package:build_pip_package
+  OPS="$OPS --config=cuda"
 fi
+time bazel build $OPS //tensorflow/tools/pip_package:build_pip_package //tensorflow/core/user_ops:deallocate.so
 

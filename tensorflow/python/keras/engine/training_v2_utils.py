@@ -209,16 +209,24 @@ def wrapped_execution_function(model, input_iterator, mode, reset_metrics=True):
   """
   # TODO: pass this in through the function signature
   num_virtual_nodes = int(os.getenv("NUM_VIRTUAL_NODES_PER_DEVICE") or 1)
+  # Load an op kernel that allows us to explicitly deallocate tensors
+  deallocate_op_module = os.getenv("TF_DEALLOCATE_OP_PATH")
+  if deallocate_op_module is not None:
+    deallocate_op_module = tf.load_op_library(deallocate_op_module)
+
   aggregated_outputs = None
+  deallocate_ops = []
   for i in range(num_virtual_nodes):
     x, y, sample_weights = _prepare_feed_values(model, input_iterator, mode)
     outputs = None
-    if mode == ModeKeys.TRAIN:
-      outputs = train_on_batch(model, x, y, sample_weights, reset_metrics=reset_metrics)
-    elif mode == ModeKeys.TEST:
-      outputs = test_on_batch(model, x, y, sample_weights, reset_metrics=reset_metrics)
-    else:
-      raise ValueError("Unexpected mode in wrapped_execution_function: %s" % mode)
+    # Manually deallocate leftover tensors from previous virtual nodes before running
+    with tf.control_dependencies(deallocate_ops):
+      if mode == ModeKeys.TRAIN:
+        outputs = train_on_batch(model, x, y, sample_weights, reset_metrics=reset_metrics)
+      elif mode == ModeKeys.TEST:
+        outputs = test_on_batch(model, x, y, sample_weights, reset_metrics=reset_metrics)
+      else:
+        raise ValueError("Unexpected mode in wrapped_execution_function: %s" % mode)
     # Convert all IndexedSlices to dense tensors
     # TODO: find a more efficient way to handle this, e.g. processing them in place
     if 'grads' in outputs:
@@ -240,6 +248,13 @@ def wrapped_execution_function(model, input_iterator, mode, reset_metrics=True):
           aggregated_outputs['grads'][i] += outputs['grads'][i]
     else:
       aggregated_outputs = outputs
+    # Prepare manual deallocation ops to run before the next virtual node, if any
+    # Note that if this is the last virtual node to run on this device, we do not actually
+    # run these ops, but instead deallocate the tensors naturally through reference counting
+    # TODO: also deallocate merged gradients
+    if model._last_computed_tensors is None:
+      raise ValueError("Model has no computed tensors")
+    deallocate_ops = [deallocate_op_module.deallocate(t) for t in model._last_computed_tensors]
   # Finish averaging gradients and update the model
   if 'grads' in aggregated_outputs:
     for i in range(len(aggregated_outputs['grads'])):

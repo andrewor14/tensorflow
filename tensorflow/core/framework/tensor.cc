@@ -72,7 +72,7 @@ namespace {
 class BufferBase : public TensorBuffer {
  public:
   explicit BufferBase(Allocator* alloc, void* data_ptr)
-      : TensorBuffer(data_ptr), alloc_(alloc) {}
+      : TensorBuffer(data_ptr), alloc_(alloc), deallocated_(false) {}
 
   TensorBuffer* root_buffer() override { return this; }
   void FillAllocationDescription(AllocationDescription* proto) const override {
@@ -101,6 +101,7 @@ class BufferBase : public TensorBuffer {
   }
 
   Allocator* const alloc_;
+  bool deallocated_;
 };
 
 // Typed ref-counted buffer: T[n].
@@ -111,6 +112,16 @@ class Buffer : public BufferBase {
   Buffer(Allocator* a, int64 n, const AllocationAttributes& allocation_attr);
 
   size_t size() const override { return sizeof(T) * elem_; }
+
+  void Deallocate() override {
+    if (data() && !deallocated_) {
+      if (LogMemory::IsEnabled()) {
+        RecordDeallocation();
+      }
+      TypedAllocator::Deallocate<T>(alloc_, static_cast<T*>(data()), elem_);
+      deallocated_ = true;
+    }
+  }
 
  private:
   T* data_;
@@ -456,12 +467,7 @@ Buffer<T>::Buffer(Allocator* a, int64 n,
 
 template <typename T>
 Buffer<T>::~Buffer() {
-  if (data()) {
-    if (LogMemory::IsEnabled()) {
-      RecordDeallocation();
-    }
-    TypedAllocator::Deallocate<T>(alloc_, static_cast<T*>(data()), elem_);
-  }
+  Deallocate();
 }
 
 // Allocates a T[n] buffer. Fills in the buffer with repeated values
@@ -813,6 +819,10 @@ class SubBuffer : public TensorBuffer {
   TensorBuffer* root_buffer() override { return root_; }
   void FillAllocationDescription(AllocationDescription* proto) const override {
     root_->FillAllocationDescription(proto);
+  }
+
+  void Deallocate() override {
+    root_->Deallocate();
   }
 
  private:
