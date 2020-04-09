@@ -209,52 +209,55 @@ def wrapped_execution_function(model, input_iterator, mode, reset_metrics=True):
   """
   # TODO: pass this in through the function signature
   num_virtual_nodes = int(os.getenv("NUM_VIRTUAL_NODES_PER_DEVICE") or 1)
-  # Load an op kernel that allows us to explicitly deallocate tensors
-  deallocate_op_module = os.getenv("TF_DEALLOCATE_OP_PATH")
-  if deallocate_op_module is not None:
-    deallocate_op_module = tf.load_op_library(deallocate_op_module)
-
   aggregated_outputs = None
-  deallocate_ops = []
   for i in range(num_virtual_nodes):
-    x, y, sample_weights = _prepare_feed_values(model, input_iterator, mode)
-    outputs = None
-    # Manually deallocate leftover tensors from previous virtual nodes before running
-    with tf.control_dependencies(deallocate_ops):
-      if mode == ModeKeys.TRAIN:
-        outputs = train_on_batch(model, x, y, sample_weights, reset_metrics=reset_metrics)
-      elif mode == ModeKeys.TEST:
-        outputs = test_on_batch(model, x, y, sample_weights, reset_metrics=reset_metrics)
-      else:
-        raise ValueError("Unexpected mode in wrapped_execution_function: %s" % mode)
-    # Convert all IndexedSlices to dense tensors
-    # TODO: find a more efficient way to handle this, e.g. processing them in place
-    if 'grads' in outputs:
-      for i, grad in enumerate(outputs['grads']):
-        if isinstance(grad, tf.IndexedSlices):
-          outputs['grads'][i] = tf.convert_to_tensor(grad)
-    # Aggregate temporary outputs according to `distributed_training_utils.unwrap_output_dict`:
-    #   - sum 'total_loss' and 'batch_size'
-    #   - ignore 'output_losses' because it is an empty list for many cases
-    #   - ignore 'metrics' because it seems to be the same across all replicas
-    #   - take the average of 'grads', which is fine if all workers have the same number
-    #     of virtual nodes
+    # Ensure we have finished running the previous virtual node before proceeding
+    dependencies = []
     if aggregated_outputs is not None:
-      assert len(aggregated_outputs['total_loss']) == 1
-      aggregated_outputs['total_loss'][0] += outputs['total_loss'][0]
-      aggregated_outputs['batch_size'] += outputs['batch_size']
-      if 'grads' in aggregated_outputs:
-        for i in range(len(aggregated_outputs['grads'])):
-          aggregated_outputs['grads'][i] += outputs['grads'][i]
-    else:
-      aggregated_outputs = outputs
-    # Prepare manual deallocation ops to run before the next virtual node, if any
-    # Note that if this is the last virtual node to run on this device, we do not actually
-    # run these ops, but instead deallocate the tensors naturally through reference counting
-    # TODO: also deallocate merged gradients
-    if model._last_computed_tensors is None:
-      raise ValueError("Model has no computed tensors")
-    deallocate_ops = [deallocate_op_module.deallocate(t) for t in model._last_computed_tensors]
+      for deps in aggregated_outputs.values():
+        if isinstance(deps, list):
+          dependencies.extend(deps)
+        else:
+          dependencies.append(deps)
+    with tf.control_dependencies(dependencies):
+      print_op = tf.print("Running virtual node %s/%s" % (i+1, num_virtual_nodes))
+      with tf.control_dependencies([print_op]):
+        # Actually process the current virtual node
+        x, y, sample_weights = _prepare_feed_values(model, input_iterator, mode)
+        outputs = None
+        if mode == ModeKeys.TRAIN:
+          outputs = train_on_batch(model, x, y, sample_weights, reset_metrics=reset_metrics)
+        elif mode == ModeKeys.TEST:
+          outputs = test_on_batch(model, x, y, sample_weights, reset_metrics=reset_metrics)
+        else:
+          raise ValueError("Unexpected mode in wrapped_execution_function: %s" % mode)
+        # Convert all IndexedSlices to dense tensors
+        # TODO: find a more efficient way to handle this, e.g. processing them in place
+        if 'grads' in outputs:
+          for i, grad in enumerate(outputs['grads']):
+            if isinstance(grad, tf.IndexedSlices):
+              outputs['grads'][i] = tf.convert_to_tensor(grad)
+        # Aggregate temporary outputs according to `distributed_training_utils.unwrap_output_dict`:
+        #   - sum 'total_loss' and 'batch_size'
+        #   - ignore 'output_losses' because it is an empty list for many cases
+        #   - ignore 'metrics' because it seems to be the same across all replicas
+        #   - take the average of 'grads', which is fine if all workers have the same number
+        #     of virtual nodes
+        if aggregated_outputs is not None:
+          assert len(outputs['total_loss']) == 1
+          assert len(aggregated_outputs['total_loss']) == 1
+          aggregated_outputs['total_loss'][0] += outputs['total_loss'][0]
+          aggregated_outputs['batch_size'] += outputs['batch_size']
+          # Aggregate gradients; we sum them here and divide them later to take the average
+          if 'grads' in aggregated_outputs:
+            if 'grads' not in outputs:
+              raise ValueError("Missing gradients in virtual node %s output" % (i+1))
+            if len(aggregated_outputs['grads']) != len(outputs['grads']):
+              raise ValueError("Wrong number of gradients in virtual node %s output" % (i+1))
+            for i in range(len(aggregated_outputs['grads'])):
+              aggregated_outputs['grads'][i] += outputs['grads'][i]
+        else:
+          aggregated_outputs = outputs
   # Finish averaging gradients and update the model
   if 'grads' in aggregated_outputs:
     for i in range(len(aggregated_outputs['grads'])):
