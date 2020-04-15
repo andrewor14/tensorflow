@@ -53,44 +53,6 @@ Status CopyElementToSlice(Tensor element, Tensor* parent, int64 index);
 Status MaybeMoveSliceToElement(Tensor* parent, Tensor* element, int64 index);
 }  // namespace batch_util
 
-// Interface to access the raw ref-counted data buffer.
-class TensorBuffer : public core::RefCounted {
- public:
-  explicit TensorBuffer(void* data_ptr) : data_(data_ptr) {}
-  ~TensorBuffer() override {}
-
-  // data() points to a memory region of size() bytes.
-  //
-  // NOTE(mrry): The `data()` method is not virtual for performance reasons.
-  // It can be called multiple times when the contents of a `Tensor` are
-  // accessed, and so making it non-virtual allows the body to be inlined.
-  void* data() const { return data_; }
-  virtual size_t size() const = 0;
-
-  // If this TensorBuffer is sub-buffer of another TensorBuffer,
-  // returns that TensorBuffer. Otherwise, returns this.
-  virtual TensorBuffer* root_buffer() = 0;
-
-  // Fill metadata about the allocation into the proto.
-  virtual void FillAllocationDescription(
-      AllocationDescription* proto) const = 0;
-
-  template <typename T>
-  T* base() const {
-    return reinterpret_cast<T*>(data());
-  }
-
-  // Whether this TensorBuffer owns the underlying memory.
-  virtual bool OwnsMemory() const { return true; }
-
-  virtual void Deallocate() {
-    LOG(INFO) << "WARNING: TensorBuffer.Deallocate() is called, doing nothing";
-  }
-
- private:
-  void* const data_;
-};
-
 /// @ingroup core
 /// Represents an n-dimensional array of values.
 class Tensor {
@@ -626,12 +588,6 @@ class Tensor {
     TF_CHECK_OK(BitcastFrom(other, dtype, shape));
   }
 
-  // HACK: manually deallocate the internal buffer from memory
-  void DeallocateBuffer() const {
-    LOG(INFO) << "Tensor.DeallocateBuffer(), buffer type = " << typeid(*buf_).name();
-    buf_->Deallocate();
-  }
-
  private:
   // Returns true if the refcount on buf_ and any possible underlying root
   // buffer is one.
@@ -716,6 +672,40 @@ class Tensor {
 // Implementation details
 
 // START_SKIP_DOXYGEN
+
+// Interface to access the raw ref-counted data buffer.
+class TensorBuffer : public core::RefCounted {
+ public:
+  explicit TensorBuffer(void* data_ptr) : data_(data_ptr) {}
+  ~TensorBuffer() override {}
+
+  // data() points to a memory region of size() bytes.
+  //
+  // NOTE(mrry): The `data()` method is not virtual for performance reasons.
+  // It can be called multiple times when the contents of a `Tensor` are
+  // accessed, and so making it non-virtual allows the body to be inlined.
+  void* data() const { return data_; }
+  virtual size_t size() const = 0;
+
+  // If this TensorBuffer is sub-buffer of another TensorBuffer,
+  // returns that TensorBuffer. Otherwise, returns this.
+  virtual TensorBuffer* root_buffer() = 0;
+
+  // Fill metadata about the allocation into the proto.
+  virtual void FillAllocationDescription(
+      AllocationDescription* proto) const = 0;
+
+  template <typename T>
+  T* base() const {
+    return reinterpret_cast<T*>(data());
+  }
+
+  // Whether this TensorBuffer owns the underlying memory.
+  virtual bool OwnsMemory() const { return true; }
+
+ private:
+  void* const data_;
+};
 
 template <typename T>
 T* Tensor::base() const {

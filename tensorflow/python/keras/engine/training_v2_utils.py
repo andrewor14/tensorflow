@@ -219,10 +219,10 @@ def wrapped_execution_function(model, input_iterator, mode, reset_metrics=True):
           dependencies.extend(deps)
         else:
           dependencies.append(deps)
+    # Actually process the current virtual node
     with tf.control_dependencies(dependencies):
       print_op = tf.print("Running virtual node %s/%s" % (i+1, num_virtual_nodes))
       with tf.control_dependencies([print_op]):
-        # Actually process the current virtual node
         x, y, sample_weights = _prepare_feed_values(model, input_iterator, mode)
         outputs = None
         if mode == ModeKeys.TRAIN:

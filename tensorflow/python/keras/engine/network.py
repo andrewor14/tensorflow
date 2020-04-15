@@ -168,7 +168,6 @@ class Network(base_layer.Layer):
       # Subclassed network
       self._init_subclassed_network(**kwargs)
 
-    self._last_computed_tensors = None
     tf_utils.assert_no_legacy_layers(self.layers)
 
   # Several Network methods have "no_automatic_dependency_tracking"
@@ -877,9 +876,6 @@ class Network(base_layer.Layer):
       cache_key = generic_utils.object_list_uid(input_shapes)
       self._output_shape_cache[cache_key] = nest.pack_sequence_as(
           self._nested_outputs, output_shapes)
-
-    # Keep track of intermediate tensors in case we need to manually deallocate them
-    self._last_computed_tensors = [v for k, v in tensor_dict.items()]
 
     output_tensors = nest.pack_sequence_as(self._nested_outputs, output_tensors)
     return output_tensors
