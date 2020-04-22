@@ -62,18 +62,25 @@ def _make_execution_function(model, mode):
   """Creates a function to run one step of distributed model execution."""
   per_replica_function = _make_replica_execution_function(mode)
 
-  def distributed_function(input_iterator):
+  def distributed_function(input_iterators):
     """A single step of the distributed execution across replicas."""
-    # Convert `input_iterator` to a `PerReplica` value of individual iterators.
-    # We assume `input_iterator` to be an instance of `DistributedIterator`.
+    # The input can be a list of iterators, one for each virtual node
+    # For backward compatibility, we also let the user pass in a single iterator
+    if not isinstance(input_iterators, list):
+      input_iterators = [input_iterators]
+    # Convert each iterator to a `PerReplica` value of individual iterators.
+    # We assume each iterator is an instance of `DistributedIterator`.
     # We do this to allow each device to independently fetch the next batch.
-    if not isinstance(input_iterator, DistributedIterator):
-      raise ValueError("Expected input_iterator to be a DistributedIterator")
-    if len(input_iterator._iterators) != 1:
-      raise ValueError("Expected a single input iterator from CPU")
-    # DistributedIterator -> _SingleWorkerDatasetIterator -> MultiDeviceIterator -> IteratorV2
-    per_replica_iterators = input_iterator._iterators[0]._iterator._device_iterators
-    per_replica_iterators = values.regroup(input_iterator._input_workers.device_map, per_replica_iterators)
+    all_per_replica_iterators = []
+    for it in input_iterators:
+      if not isinstance(it, DistributedIterator):
+        raise ValueError("Expected input iterator to be a DistributedIterator")
+      if len(it._iterators) != 1:
+        raise ValueError("Expected a single input iterator from CPU")
+      # DistributedIterator -> _SingleWorkerDatasetIterator -> MultiDeviceIterator -> IteratorV2
+      per_replica_iterators = it._iterators[0]._iterator._device_iterators
+      per_replica_iterators = values.regroup(it._input_workers.device_map, per_replica_iterators)
+      all_per_replica_iterators.append(per_replica_iterators)
 
     # Call `Model.{train,test,predict}_on_batch` on every replica passing
     # PerReplicas as arguments.  On every replica inside this call, each
@@ -81,7 +88,7 @@ def _make_execution_function(model, mode):
     # are PerReplicas too.
     strategy = distribution_strategy_context.get_strategy()
     outputs = strategy.experimental_run_v2(
-        per_replica_function, args=(model, per_replica_iterators, mode))
+        per_replica_function, args=(model, all_per_replica_iterators, mode))
     # Out of PerReplica outputs reduce or pick values to return.
     all_outputs = dist_utils.unwrap_output_dict(
         strategy, outputs, mode)
@@ -199,16 +206,21 @@ def _prepare_model_with_inputs(model, dataset):
                                                model.sample_weight_mode)
 
 
-def wrapped_execution_function(model, input_iterator, mode, reset_metrics=True):
+def wrapped_execution_function(model, input_iterators, mode, reset_metrics=True):
   """
-  A wrapper around the underlying execution function that takes in the input iterator
-  instead of a single batch of input data.
+  A wrapper around the underlying execution function that takes in the input
+  iterators instead of a single batch of input data.
 
-  This wrapper is intended to be called as a per replica function. It allows each replica
-  to process multiple batches, one after another, within the same function call.
+  This wrapper is intended to be called as a per replica function. It allows
+  each replica to process multiple batches, one after another, within the same
+  function call. Each virtual node uses its own input iterator.
   """
   # TODO: pass this in through the function signature
   num_virtual_nodes = int(os.getenv("NUM_VIRTUAL_NODES_PER_DEVICE") or 1)
+  if len(input_iterators) != num_virtual_nodes:
+    raise ValueError("Wrong number of input iterators %s, should've been %s" %
+      (len(input_iterators), num_virtual_nodes))
+
   aggregated_outputs = None
   for i in range(num_virtual_nodes):
     # Ensure we have finished running the previous virtual node before proceeding
@@ -223,7 +235,7 @@ def wrapped_execution_function(model, input_iterator, mode, reset_metrics=True):
     with tf.control_dependencies(dependencies):
       print_op = tf.print("Running virtual node %s/%s" % (i+1, num_virtual_nodes))
       with tf.control_dependencies([print_op]):
-        x, y, sample_weights = _prepare_feed_values(model, input_iterator, mode)
+        x, y, sample_weights = _prepare_feed_values(model, input_iterators[i], mode)
         outputs = None
         if mode == ModeKeys.TRAIN:
           outputs = train_on_batch(model, x, y, sample_weights, reset_metrics=reset_metrics)
@@ -234,9 +246,9 @@ def wrapped_execution_function(model, input_iterator, mode, reset_metrics=True):
         # Convert all IndexedSlices to dense tensors
         # TODO: find a more efficient way to handle this, e.g. processing them in place
         if 'grads' in outputs:
-          for i, grad in enumerate(outputs['grads']):
+          for j, grad in enumerate(outputs['grads']):
             if isinstance(grad, tf.IndexedSlices):
-              outputs['grads'][i] = tf.convert_to_tensor(grad)
+              outputs['grads'][j] = tf.convert_to_tensor(grad)
         # Aggregate temporary outputs according to `distributed_training_utils.unwrap_output_dict`:
         #   - sum 'total_loss' and 'batch_size'
         #   - ignore 'output_losses' because it is an empty list for many cases
@@ -254,14 +266,14 @@ def wrapped_execution_function(model, input_iterator, mode, reset_metrics=True):
               raise ValueError("Missing gradients in virtual node %s output" % (i+1))
             if len(aggregated_outputs['grads']) != len(outputs['grads']):
               raise ValueError("Wrong number of gradients in virtual node %s output" % (i+1))
-            for i in range(len(aggregated_outputs['grads'])):
-              aggregated_outputs['grads'][i] += outputs['grads'][i]
+            for j in range(len(aggregated_outputs['grads'])):
+              aggregated_outputs['grads'][j] += outputs['grads'][j]
         else:
           aggregated_outputs = outputs
   # Finish averaging gradients and update the model
   if 'grads' in aggregated_outputs:
-    for i in range(len(aggregated_outputs['grads'])):
-      aggregated_outputs['grads'][i] /= num_virtual_nodes
+    for j in range(len(aggregated_outputs['grads'])):
+      aggregated_outputs['grads'][j] /= num_virtual_nodes
     model.optimizer.apply_gradients(zip(aggregated_outputs['grads'], model.trainable_weights))
   return aggregated_outputs
 

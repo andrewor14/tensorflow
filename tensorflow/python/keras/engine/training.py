@@ -705,7 +705,9 @@ class Model(network.Network):
     self._assert_compile_was_called()
     self._check_call_args('fit')
 
-    func = self._select_training_loop(x)
+    # The input can be a list of datasets, one for each virtual node
+    first_x = x[0] if isinstance(x, list) else x
+    func = self._select_training_loop(first_x)
     return func.fit(
         self,
         x=x,
@@ -818,7 +820,9 @@ class Model(network.Network):
     self._assert_compile_was_called()
     self._check_call_args('evaluate')
 
-    func = self._select_training_loop(x)
+    # The input can be a list of datasets, one for each virtual node
+    first_x = x[0] if isinstance(x, list) else x
+    func = self._select_training_loop(first_x)
     return func.evaluate(
         self,
         x=x,
@@ -896,7 +900,9 @@ class Model(network.Network):
     _keras_api_gauge.get_cell('predict').set(True)
     self._check_call_args('predict')
 
-    func = self._select_training_loop(x)
+    # The input can be a list of datasets, one for each virtual node
+    first_x = x[0] if isinstance(x, list) else x
+    func = self._select_training_loop(first_x)
     return func.predict(
         self,
         x=x,

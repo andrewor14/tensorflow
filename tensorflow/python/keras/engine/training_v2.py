@@ -73,7 +73,7 @@ def run_one_epoch(model,
 
   Args:
     model: The keras model to run.
-    iterator: the dataset iterator to fetch the data.
+    iterator: the dataset iterator(s) to fetch the data.
     execution_function: a tf.function that can be called with data.
     dataset_size: the size of iterator, None when unknown.
     batch_size: The size of the current batch.
@@ -188,18 +188,52 @@ class Loop(training_utils.TrainingLoop):
   have distribution strategy, etc.
   """
 
+  def _prepare_inputs_for_virtualization(self, x, y, validation_data):
+    """
+    Helper method to prepare the inputs for virtual node processing.
+
+    One or more virtual nodes can be assigned to a physical device and are processed
+    sequentially on the device. Each virtual node consumes its own input datasets,
+    This method returns 3 lists of the same dimensions in an order that matches the
+    input arguments. If `None` is supplied for any of the arguments, the corresponding
+    list returned will be a list of `None`s.
+    """
+    # The input can be a list of datasets, one for each virtual node
+    # For backward compatibility, we also let the user pass in a single dataset
+    if x is not None and not isinstance(x, list):
+      x = [x]
+    if y is not None and not isinstance(y, list):
+      y = [y]
+    if validation_data is not None and not isinstance(validation_data, list):
+      validation_data = [validation_data]
+
+    # Ensure x, y, and validation_data have the same dimensions
+    if x is not None:
+      if y is None:
+        y = [None] * len(x)
+      elif len(y) != len(x):
+        raise ValueError("x and y have different dimensions (%s vs %s)" % (len(x), len(y)))
+      if validation_data is None:
+        validation_data = [None] * len(x)
+      elif len(validation_data) != len(x):
+        raise ValueError("x and validation_data have different dimensions (%s vs %s)" %\
+          (len(x), len(validation_data)))
+    return x, y, validation_data
+
   def fit(
       self, model, x=None, y=None, batch_size=None, epochs=1, verbose=1,
       callbacks=None, validation_split=0., validation_data=None, shuffle=True,
       class_weight=None, sample_weight=None, initial_epoch=0,
       steps_per_epoch=None, validation_steps=None, validation_freq=1, **kwargs):
+    x, y, validation_data = self._prepare_inputs_for_virtualization(x, y, validation_data)
+
     batch_size = model._validate_or_infer_batch_size(
-        batch_size, steps_per_epoch, x)
+        batch_size, steps_per_epoch, x[0])
 
     strategy = _get_distribution_strategy(model)
     batch_size, steps_per_epoch = dist_utils.process_batch_and_step_size(
         strategy,
-        x,
+        x[0],
         batch_size,
         steps_per_epoch,
         ModeKeys.TRAIN,
@@ -208,31 +242,36 @@ class Loop(training_utils.TrainingLoop):
                                   optimizer=model.optimizer)
     # Enter tf.distribute.Strategy scope.
     with strategy.scope():
-      training_data_adapter, validation_adapter = _process_training_inputs(
-          model,
-          x,
-          y,
-          batch_size=batch_size,
-          epochs=epochs,
-          sample_weights=sample_weight,
-          class_weights=class_weight,
-          validation_split=validation_split,
-          steps_per_epoch=steps_per_epoch,
-          shuffle=shuffle,
-          validation_data=validation_data,
-          validation_steps=validation_steps,
-          distribution_strategy=strategy)
+      training_data_adapters = []
+      validation_adapters = []
+      for i in range(len(x)):
+        training_data_adapter, validation_adapter = _process_training_inputs(
+            model,
+            x[i],
+            y[i],
+            batch_size=batch_size,
+            epochs=epochs,
+            sample_weights=sample_weight,
+            class_weights=class_weight,
+            validation_split=validation_split,
+            steps_per_epoch=steps_per_epoch,
+            shuffle=shuffle,
+            validation_data=validation_data[i],
+            validation_steps=validation_steps,
+            distribution_strategy=strategy)
+        training_data_adapters.append(training_data_adapter)
+        validation_adapters.append(validation_adapter)
 
-      total_samples = _get_total_number_of_samples(training_data_adapter)
+      total_samples = _get_total_number_of_samples(training_data_adapters[0])
       use_sample = total_samples is not None
-      do_validation = (validation_adapter is not None)
+      do_validation = (validation_adapters[0] is not None)
 
       recreate_training_iterator = (
-          training_data_adapter.should_recreate_iterator(steps_per_epoch))
+          training_data_adapters[0].should_recreate_iterator(steps_per_epoch))
       if not steps_per_epoch:
         # TODO(b/139762795): Add step inference for when steps is None to
         # prevent end of sequence warning message.
-        steps_per_epoch = training_data_adapter.get_size()
+        steps_per_epoch = training_data_adapters[0].get_size()
 
       # tf.print('{} on {} steps.'.format(ModeKeys.TRAIN, steps_per_epoch))
       training_context = TrainingContext()
@@ -240,38 +279,38 @@ class Loop(training_utils.TrainingLoop):
       initial_epoch = model._maybe_load_initial_epoch_from_ckpt(
           initial_epoch, ModeKeys.TRAIN)
 
-      training_dataset = training_data_adapter.get_dataset()
-      # Raise an error if steps_per_epoch isn't specified but the dataset
-      # is infinite.
-      # TODO(scottzhu): This check should probably happen in the adapter
-      training_utils.infer_steps_for_dataset(
-          training_dataset, steps_per_epoch, steps_name='steps_per_epoch',
-          epochs=0)
+      training_datasets = [a.get_dataset() for a in training_data_adapters]
+      for d in training_datasets:
+        # Raise an error if steps_per_epoch isn't specified but the dataset
+        # is infinite.
+        # TODO(scottzhu): This check should probably happen in the adapter
+        training_utils.infer_steps_for_dataset(
+            d, steps_per_epoch, steps_name='steps_per_epoch', epochs=0)
 
-      training_dataset = strategy.experimental_distribute_dataset(
-          training_dataset)
+      training_datasets = [strategy.experimental_distribute_dataset(d)\
+        for d in training_datasets]
 
       training_function = training_v2_utils._get_or_make_execution_function(
           model, ModeKeys.TRAIN)
 
-      training_data_iter = None
+      training_data_iters = None
       if do_validation:
-        validation_dataset = validation_adapter.get_dataset()
+        validation_datasets = [a.get_dataset() for a in validation_adapters]
         if not validation_steps:
           # Raise an error if validation_steps isn't specified but the
           # validation dataset is infinite.
           validation_steps = (
-              validation_adapter.get_size() or
+              validation_adapters[0].get_size() or
               training_utils.infer_steps_for_dataset(
-                  validation_dataset,
+                  validation_datasets[0],
                   validation_steps,
                   steps_name='validation_steps'))
         eval_function = training_v2_utils._get_or_make_execution_function(
             model, ModeKeys.TEST)
-        eval_data_iter = None
-        validation_dataset = strategy.experimental_distribute_dataset(
-            validation_dataset)
-        val_total_samples = _get_total_number_of_samples(validation_adapter)
+        eval_data_iters = None
+        validation_datasets = [strategy.experimental_distribute_dataset(d)\
+          for d in validation_datasets]
+        val_total_samples = _get_total_number_of_samples(validation_adapters[0])
       else:
         val_total_samples = None
 
@@ -301,18 +340,19 @@ class Loop(training_utils.TrainingLoop):
           # Training
           with training_context.on_epoch(epoch, ModeKeys.TRAIN) as epoch_logs:
             model.reset_metrics()
-            if training_data_iter is None or recreate_training_iterator:
-              if (training_data_iter is not None and
+            if training_data_iters is None or recreate_training_iterator:
+              if (training_data_iters is not None and
                   distribution_strategy_context.has_strategy()):
                 # TODO(kaftan): remove this when MultiDeviceIterator is a
                 ## compositetensor (unless this is more efficient)
-                training_data_iter._initializer  # pylint: disable=pointless-statement
+                for it in training_data_iters:
+                  it._initializer  # pylint: disable=pointless-statement
               else:
-                training_data_iter = iter(training_dataset)
+                training_data_iters = [iter(d) for d in training_datasets]
 
             training_result = run_one_epoch(
                 model,
-                training_data_iter,
+                training_data_iters,
                 training_function,
                 dataset_size=training_data_adapter.get_size(),
                 batch_size=training_data_adapter.batch_size(),
@@ -328,13 +368,14 @@ class Loop(training_utils.TrainingLoop):
             if (do_validation and
                 training_utils.should_run_validation(validation_freq, epoch) and
                 not training_callbacks.model.stop_training):
-              if (eval_data_iter is not None and
+              if (eval_data_iters is not None and
                   distribution_strategy_context.has_strategy()):
                 # TODO(kaftan): remove this when MultiDeviceIterator is a
                 ## compositetensor (unless this is more efficient)
-                eval_data_iter._initializer  # pylint: disable=pointless-statement
+                for it in eval_data_iters:
+                  it._initializer  # pylint: disable=pointless-statement
               else:
-                eval_data_iter = iter(validation_dataset)
+                eval_data_iters = [iter(d) for d in validation_datasets]
 
               validation_callbacks = cbks.configure_callbacks(
                   training_callbacks,
@@ -358,7 +399,7 @@ class Loop(training_utils.TrainingLoop):
                   model.reset_metrics()
                   eval_result = run_one_epoch(
                       model,
-                      eval_data_iter,
+                      eval_data_iters,
                       eval_function,
                       dataset_size=validation_adapter.get_size(),
                       batch_size=validation_adapter.batch_size(),
@@ -376,42 +417,45 @@ class Loop(training_utils.TrainingLoop):
   def _model_iteration(
       self, model, mode, x=None, y=None, batch_size=None, verbose=1,
       sample_weight=None, steps=None, callbacks=None, **kwargs):
+    x, y, _ = self._prepare_inputs_for_virtualization(x, y, validation_data=None)
 
     batch_size = model._validate_or_infer_batch_size(
-        batch_size, steps, x)
+        batch_size, steps, x[0])
     strategy = _get_distribution_strategy(model)
     batch_size, steps = dist_utils.process_batch_and_step_size(
-        strategy, x, batch_size, steps, mode)
+        strategy, x[0], batch_size, steps, mode)
     dist_utils.validate_callbacks(input_callbacks=callbacks,
                                   optimizer=model.optimizer)
     # Enter tf.distribute.Strategy scope.
     with strategy.scope():
-      adapter = _process_inputs(
-          model,
-          x,
-          y,
-          batch_size=batch_size,
-          sample_weights=sample_weight,
-          steps=steps,
-          distribution_strategy=strategy)
-      total_samples = _get_total_number_of_samples(adapter)
+      adapters = []
+      for i in range(len(x)):
+        adapters.append(_process_inputs(
+            model,
+            x[i],
+            y[i],
+            batch_size=batch_size,
+            sample_weights=sample_weight,
+            steps=steps,
+            distribution_strategy=strategy))
+      total_samples = _get_total_number_of_samples(adapters[0])
       use_sample = total_samples is not None
-      dataset = adapter.get_dataset()
+      datasets = [a.get_dataset() for a in adapters]
 
       if not steps:
         # Raise an error if `steps` isn't specified but the dataset
         # is infinite.
-        steps = adapter.get_size() or training_utils.infer_steps_for_dataset(
-            dataset, steps, steps_name='steps')
+        steps = adapters[0].get_size() or training_utils.infer_steps_for_dataset(
+            datasets[0], steps, steps_name='steps')
 
       # tf.print('{} on {} steps.'.format(ModeKeys.TRAIN, steps_per_epoch))
       training_context = TrainingContext()
-      dataset = strategy.experimental_distribute_dataset(dataset)
+      datasets = [strategy.experimental_distribute_dataset(d) for d in datasets]
 
       execution_function = training_v2_utils._get_or_make_execution_function(
           model, mode)
 
-      data_iterator = iter(dataset)
+      data_iterators = [iter(d) for d in datasets]
 
       callbacks = cbks.configure_callbacks(
           callbacks,
@@ -432,10 +476,10 @@ class Loop(training_utils.TrainingLoop):
           model.reset_metrics()
           result = run_one_epoch(
               model,
-              data_iterator,
+              data_iterators,
               execution_function,
-              dataset_size=adapter.get_size(),
-              batch_size=adapter.batch_size(),
+              dataset_size=adapters[0].get_size(),
+              batch_size=adapters[0].batch_size(),
               strategy=strategy,
               steps_per_epoch=steps,
               num_samples=total_samples,
