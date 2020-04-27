@@ -163,11 +163,19 @@ def unwrap_output_dict(strategy, grouped_outputs, mode):
     # code path as well.
     output_losses = output_losses[::strategy.num_replicas_in_sync]
     metrics = metrics[::strategy.num_replicas_in_sync]
-  return {'total_loss': [total_loss],
-          'output_losses': output_losses,
-          'metrics': metrics,
-          'batch_size': batch_size}
-
+  result = {
+    'total_loss': [total_loss],
+    'output_losses': output_losses,
+    'metrics': metrics,
+    'batch_size': batch_size
+  }
+  # When using Horovod, we first synchronize the gradients across the devices
+  # assigned to each worker before passing them to Horovod
+  from virtual import virtual_helper
+  if virtual_helper.horovod_enabled() and 'grads' in grouped_outputs:
+    result['grads'] = strategy.reduce(
+      reduce_util.ReduceOp.MEAN, grouped_outputs['grads'], axis=None)
+  return result
 
 def unwrap_outputs(distribution_strategy, grouped_outputs,
                    with_loss_tensor=False):

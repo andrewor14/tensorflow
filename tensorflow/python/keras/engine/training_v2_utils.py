@@ -92,6 +92,12 @@ def _make_execution_function(model, mode):
     # Out of PerReplica outputs reduce or pick values to return.
     all_outputs = dist_utils.unwrap_output_dict(
         strategy, outputs, mode)
+    # Optionally use Horovod to synchronize gradients
+    from virtual import virtual_helper
+    if virtual_helper.horovod_enabled() and 'grads' in all_outputs:
+      grads = virtual_helper.HOROVOD_ALLREDUCE_FUNCTION(all_outputs['grads'])
+      func = lambda g: model.optimizer.apply_gradients(zip(g, model.trainable_weights))
+      strategy.experimental_run_v2(func, args=(grads,))
     return all_outputs
 
   if not model.run_eagerly:
@@ -274,7 +280,10 @@ def wrapped_execution_function(model, input_iterators, mode, reset_metrics=True)
   if 'grads' in aggregated_outputs:
     for j in range(len(aggregated_outputs['grads'])):
       aggregated_outputs['grads'][j] /= num_virtual_nodes
-    model.optimizer.apply_gradients(zip(aggregated_outputs['grads'], model.trainable_weights))
+    # If Horovod is enabled, we will apply the gradients outside the per replica function
+    from virtual import virtual_helper
+    if not virtual_helper.horovod_enabled():
+      model.optimizer.apply_gradients(zip(aggregated_outputs['grads'], model.trainable_weights))
   return aggregated_outputs
 
 
