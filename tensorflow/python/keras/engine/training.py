@@ -19,12 +19,15 @@ from __future__ import division
 from __future__ import print_function
 
 import copy
+import os
 
+import tensorflow as tf
 from tensorflow.python.distribute import distribute_coordinator as dc
 from tensorflow.python.distribute import distribute_coordinator_context as dc_context
 from tensorflow.python.distribute import distribution_strategy_context as ds_context
 from tensorflow.python.distribute import parameter_server_strategy
 from tensorflow.python.distribute import values as ds_values
+from tensorflow.python.distribute.input_lib import DistributedIterator
 from tensorflow.python.eager import backprop
 from tensorflow.python.eager import context
 from tensorflow.python.eager import def_function
@@ -497,7 +500,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
   def run_eagerly(self, value):
     self._run_eagerly = value
 
-  def train_step(self, data):
+  def train_step(self, iterator):
     """The logic for one training step.
 
     This method can be overridden to support custom training logic.
@@ -512,7 +515,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
     `Model.make_train_function`, which can also be overridden.
 
     Arguments:
-      data: A nested structure of `Tensor`s.
+      iterator: An iterator of nested structures of `Tensor`s.
 
     Returns:
       A `dict` containing values that will be passed to
@@ -521,24 +524,59 @@ class Model(network.Network, version_utils.ModelVersionSelector):
       `{'loss': 0.2, 'accuracy': 0.7}`.
 
     """
-    # These are the only transformations `Model.fit` applies to user-input
-    # data when a `tf.data.Dataset` is provided. These utilities will be exposed
-    # publicly.
-    data = data_adapter.expand_1d(data)
-    x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
+    num_virtual_nodes = int(os.getenv("NUM_VIRTUAL_NODES_PER_DEVICE") or 1)
 
-    with backprop.GradientTape() as tape:
-      y_pred = self(x, training=True)
-      loss = self.compiled_loss(
-          y, y_pred, sample_weight, regularization_losses=self.losses)
+    aggregated_gradients = None
+    for i in range(num_virtual_nodes):
+      # Ensure we have finished running the previous virtual node before proceeding
+      with tf.control_dependencies(aggregated_gradients or []):
+        print_op = tf.print("Running virtual node %s/%s" % (i+1, num_virtual_nodes))
+      with tf.control_dependencies([print_op]):
+        # These are the only transformations `Model.fit` applies to user-input
+        # data when a `tf.data.Dataset` is provided. These utilities will be exposed
+        # publicly.
+        data = next(iterator)
+        data = data_adapter.expand_1d(data)
+        x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
+
+        with backprop.GradientTape() as tape:
+          y_pred = self(x, training=True)
+          loss = self.compiled_loss(
+              y, y_pred, sample_weight, regularization_losses=self.losses)
+
+        # Compute gradients
+        with tape:
+          if isinstance(self.optimizer, lso.LossScaleOptimizer):
+            loss = self.optimizer.get_scaled_loss(loss)
+        gradients = tape.gradient(loss, self.trainable_variables)
+
+        # Convert all IndexedSlices to dense tensors
+        # TODO: find a more efficient way to handle this, e.g. processing them in place
+        for j, grad in enumerate(gradients):
+          if isinstance(grad, tf.IndexedSlices):
+            gradients[j] = tf.convert_to_tensor(grad)
+
+        # Aggregate gradients across virtual nodes
+        # We sum them here and divide them later
+        if aggregated_gradients is None:
+          aggregated_gradients = gradients
+        else:
+          if len(aggregated_gradients) != len(gradients):
+            raise ValueError("Wrong number of gradients %s, expected %s" %\
+              (len(gradients), len(aggregated_outputs)))
+          for j in range(len(gradients)):
+            aggregated_gradients[j] += gradients[j]
+
     # For custom training steps, users can just write:
     #   trainable_variables = self.trainable_variables
     #   gradients = tape.gradient(loss, trainable_variables)
     #   self.optimizer.apply_gradients(zip(gradients, trainable_variables))
-    # The _minimize call does a few extra steps unnecessary in most cases,
+    # The _apply_gradients call does a few extra steps unnecessary in most cases,
     # such as loss scaling and gradient clipping.
-    _minimize(self.distribute_strategy, tape, self.optimizer, loss,
-              self.trainable_variables)
+    for j in range(len(aggregated_gradients)):
+      aggregated_gradients[j] /= num_virtual_nodes
+    _apply_gradients(self.distribute_strategy, self.optimizer,
+      aggregated_gradients, self.trainable_variables)
 
     self.compiled_metrics.update_state(y, y_pred, sample_weight)
     return {m.name: m.result() for m in self.metrics}
@@ -567,9 +605,18 @@ class Model(network.Network, version_utils.ModelVersionSelector):
       return self.train_function
 
     def train_function(iterator):
-      data = next(iterator)
+      # Convert each iterator to a `PerReplica` value of individual iterators.
+      # We assume each iterator is an instance of `DistributedIterator`.
+      # We do this to allow each device to independently fetch the next batch.
+      if not isinstance(iterator, DistributedIterator):
+        raise ValueError("Expected input iterator to be a DistributedIterator")
+      if len(iterator._iterators) != 1:
+        raise ValueError("Expected a single input iterator from CPU")
+      # DistributedIterator -> _SingleWorkerDatasetIterator -> MultiDeviceIterator -> iterator_ops.Iterator
+      per_replica_iterators = iterator._iterators[0]._iterator._device_iterators
+      per_replica_iterators = ds_values.regroup(per_replica_iterators)
       outputs = self.distribute_strategy.run(
-          self.train_step, args=(data,))
+          self.train_step, args=(per_replica_iterators,))
       outputs = reduce_per_replica(
           outputs, self.distribute_strategy, reduction='first')
       return outputs
@@ -1760,13 +1807,12 @@ def _tpu_multi_host_concat(v, strategy):
   return concat(ordered_replicas)
 
 
-def _minimize(strategy, tape, optimizer, loss, trainable_variables):
-  """Minimizes loss for one step by updating `trainable_variables`.
+def _apply_gradients(strategy, optimizer, gradients, trainable_variables):
+  """Apply the given gradients by updating `trainable_variables`.
 
   This is roughly equivalent to
 
   ```python
-  gradients = tape.gradient(loss, trainable_variables)
   self.optimizer.apply_gradients(zip(gradients, trainable_variables))
   ```
 
@@ -1775,19 +1821,11 @@ def _minimize(strategy, tape, optimizer, loss, trainable_variables):
 
   Args:
     strategy: `tf.distribute.Strategy`.
-    tape: A gradient tape. The loss must have been computed under this tape.
     optimizer: The optimizer used to minimize the loss.
-    loss: The loss tensor.
+    gradients: The gradients to use when applying to the variables.
     trainable_variables: The variables that will be updated in order to minimize
       the loss.
   """
-
-  with tape:
-    if isinstance(optimizer, lso.LossScaleOptimizer):
-      loss = optimizer.get_scaled_loss(loss)
-
-  gradients = tape.gradient(loss, trainable_variables)
-
   # Whether to aggregate gradients outside of optimizer. This requires support
   # of the optimizer and doesn't work with ParameterServerStrategy and
   # CentralStroageStrategy.
