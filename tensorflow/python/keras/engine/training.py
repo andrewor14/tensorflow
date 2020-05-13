@@ -530,7 +530,8 @@ class Model(network.Network, version_utils.ModelVersionSelector):
     for i in range(num_virtual_nodes):
       # Ensure we have finished running the previous virtual node before proceeding
       with tf.control_dependencies(aggregated_gradients or []):
-        print_op = tf.print("Running virtual node %s/%s" % (i+1, num_virtual_nodes))
+        print_op = tf.print("Training on virtual node %s/%s" %\
+          (i+1, num_virtual_nodes))
       with tf.control_dependencies([print_op]):
         # These are the only transformations `Model.fit` applies to user-input
         # data when a `tf.data.Dataset` is provided. These utilities will be exposed
@@ -605,18 +606,9 @@ class Model(network.Network, version_utils.ModelVersionSelector):
       return self.train_function
 
     def train_function(iterator):
-      # Convert each iterator to a `PerReplica` value of individual iterators.
-      # We assume each iterator is an instance of `DistributedIterator`.
-      # We do this to allow each device to independently fetch the next batch.
-      if not isinstance(iterator, DistributedIterator):
-        raise ValueError("Expected input iterator to be a DistributedIterator")
-      if len(iterator._iterators) != 1:
-        raise ValueError("Expected a single input iterator from CPU")
-      # DistributedIterator -> _SingleWorkerDatasetIterator -> MultiDeviceIterator -> iterator_ops.Iterator
-      per_replica_iterators = iterator._iterators[0]._iterator._device_iterators
-      per_replica_iterators = ds_values.regroup(per_replica_iterators)
+      iterator = _convert_distributed_iterator(iterator)
       outputs = self.distribute_strategy.run(
-          self.train_step, args=(per_replica_iterators,))
+          self.train_step, args=(iterator,))
       outputs = reduce_per_replica(
           outputs, self.distribute_strategy, reduction='first')
       return outputs
@@ -927,7 +919,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
       callbacks.on_train_end()
       return self.history
 
-  def test_step(self, data):
+  def test_step(self, iterator):
     """The logic for one evaluation step.
 
     This method can be overridden to support custom evaluation logic.
@@ -943,20 +935,31 @@ class Model(network.Network, version_utils.ModelVersionSelector):
     `Model.make_test_function`, which can also be overridden.
 
     Arguments:
-      data: A nested structure of `Tensor`s.
+      iterator: An iterator of nested structures of `Tensor`s.
 
     Returns:
       A `dict` containing values that will be passed to
       `tf.keras.callbacks.CallbackList.on_train_batch_end`. Typically, the
       values of the `Model`'s metrics are returned.
     """
-    data = data_adapter.expand_1d(data)
-    x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
+    num_virtual_nodes = int(os.getenv("NUM_VIRTUAL_NODES_PER_DEVICE") or 1)
 
-    y_pred = self(x, training=False)
-    # Updates stateful loss metrics.
-    self.compiled_loss(
-        y, y_pred, sample_weight, regularization_losses=self.losses)
+    control_dependencies = []
+    for i in range(num_virtual_nodes):
+      # Ensure we have finished running the previous virtual node before proceeding
+      with tf.control_dependencies(control_dependencies):
+        print_op = tf.print("Evaluating on virtual node %s/%s" %\
+          (i+1, num_virtual_nodes))
+      with tf.control_dependencies([print_op]):
+        data = next(iterator)
+        data = data_adapter.expand_1d(data)
+        x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
+
+        y_pred = self(x, training=False)
+        # Updates stateful loss metrics.
+        total_loss = self.compiled_loss(
+            y, y_pred, sample_weight, regularization_losses=self.losses)
+        control_dependencies = [total_loss]
 
     self.compiled_metrics.update_state(y, y_pred, sample_weight)
     return {m.name: m.result() for m in self.metrics}
@@ -984,9 +987,9 @@ class Model(network.Network, version_utils.ModelVersionSelector):
       return self.test_function
 
     def test_function(iterator):
-      data = next(iterator)
+      iterator = _convert_distributed_iterator(iterator)
       outputs = self.distribute_strategy.run(
-          self.test_step, args=(data,))
+          self.test_step, args=(iterator,))
       outputs = reduce_per_replica(
           outputs, self.distribute_strategy, reduction='first')
       return outputs
@@ -1186,6 +1189,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
       Function. The function created by this method should accept a
       `tf.data.Iterator`, and return the outputs of the `Model`.
     """
+    # TODO: make this work with virtual nodes
     if self.predict_function is not None:
       return self.predict_function
 
@@ -1850,3 +1854,18 @@ def _apply_gradients(strategy, optimizer, gradients, trainable_variables):
           experimental_aggregate_gradients=False)
     else:
       optimizer.apply_gradients(zip(gradients, trainable_variables))
+
+def _convert_distributed_iterator(iterator):
+  """
+  Convert each `DistributedIterator` to a `PerReplica` value of individual iterators.
+  We do this to allow each device to independently fetch the next batch.
+  """
+  if not isinstance(iterator, DistributedIterator):
+    raise ValueError("Expected input iterator to be a DistributedIterator")
+  if len(iterator._iterators) != 1:
+    raise ValueError("Expected a single input iterator from CPU")
+  # DistributedIterator -> _SingleWorkerDatasetIterator -> MultiDeviceIterator -> iterator_ops.Iterator
+  per_replica_iterators = iterator._iterators[0]._iterator._device_iterators
+  per_replica_iterators = ds_values.regroup(per_replica_iterators)
+  return per_replica_iterators
+
