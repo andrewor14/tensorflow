@@ -6,7 +6,7 @@ source build_flags.sh
 
 echo "Done configuring. Now running bazel build."
 
-OPS="--config=opt"
+OPS="--config=opt --jobs 8"
 if [[ "$TF_NEED_CUDA" == "1" ]]; then
   OPS="$OPS --config=cuda"
 fi
