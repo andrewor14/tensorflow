@@ -898,6 +898,32 @@ class Model(network.Network, version_utils.ModelVersionSelector):
               # from being retraced every time this number changes
               num_virtual_nodes = int(os.getenv("NUM_VIRTUAL_NODES_PER_DEVICE") or 1)
               num_virtual_nodes = tf.constant(num_virtual_nodes)
+
+              # TEMPY
+              from absl import logging
+              from tensorflow.core.framework import attr_value_pb2
+              from virtual.elasticity_callback import\
+                COLLECTIVE_ALLREDUCE_GROUP_KEY, COLLECTIVE_ALLREDUCE_GROUP_SIZE, START_BATCH
+              if (COLLECTIVE_ALLREDUCE_GROUP_KEY is not None and\
+                  COLLECTIVE_ALLREDUCE_GROUP_SIZE is not None):
+                # Force retracing
+                self.train_function = None
+                train_function = self.make_train_function()
+                graph = train_function.get_concrete_function(iterator, num_virtual_nodes).graph
+                allreduce_ops = [o for o in graph.get_operations() if\
+                  "CollectiveReduce" in o.name and "ReadVariableOp" not in o.name]
+                logging.info("Found %s CollectiveReduce ops in graph %s:" % (len(allreduce_ops), graph))
+                for j, o in enumerate(allreduce_ops):
+                  o._set_attr("group_key", attr_value_pb2.AttrValue(i=COLLECTIVE_ALLREDUCE_GROUP_KEY))
+                  o._set_attr("group_size", attr_value_pb2.AttrValue(i=COLLECTIVE_ALLREDUCE_GROUP_SIZE))
+                  logging.info(o)
+                logging.info("Set attributes group_key = %s and group_size = %s on all allreduce ops" %\
+                  (COLLECTIVE_ALLREDUCE_GROUP_KEY, COLLECTIVE_ALLREDUCE_GROUP_SIZE))
+              if START_BATCH is not None:
+                logging.info("Updating batch to %s (was %s)" % (START_BATCH, step))
+                step = START_BATCH
+                data_handler._current_step = START_BATCH
+
               tmp_logs = train_function(iterator, num_virtual_nodes)
               # Catch OutOfRangeError for Datasets of unknown size.
               # This blocks until the batch has finished executing.
