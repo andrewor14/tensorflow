@@ -574,10 +574,16 @@ class Model(network.Network, version_utils.ModelVersionSelector):
     #   self.optimizer.apply_gradients(zip(gradients, trainable_variables))
     # The _apply_gradients call does a few extra steps unnecessary in most cases,
     # such as loss scaling and gradient clipping.
+    print_ops = []
     for j in range(len(aggregated_gradients)):
       aggregated_gradients[j] /= num_virtual_nodes
-    _apply_gradients(self.distribute_strategy, self.optimizer,
-      aggregated_gradients, self.trainable_variables)
+      from virtual.elasticity_callback import ELASTICITY_VERBOSE
+      if ELASTICITY_VERBOSE and j == 0:
+        print_ops = [tf.print("The first gradient is ", tf.reshape(aggregated_gradients[j], [-1])[:5])]
+
+    with tf.control_dependencies(print_ops):
+      _apply_gradients(self.distribute_strategy, self.optimizer,
+        aggregated_gradients, self.trainable_variables)
 
     self.compiled_metrics.update_state(y, y_pred, sample_weight)
     return {m.name: m.result() for m in self.metrics}
@@ -888,8 +894,15 @@ class Model(network.Network, version_utils.ModelVersionSelector):
               # TEMPY
               from absl import logging
               from tensorflow.core.framework import attr_value_pb2
-              from virtual.elasticity_callback import\
-                COLLECTIVE_ALLREDUCE_GROUP_KEY, COLLECTIVE_ALLREDUCE_GROUP_SIZE, START_BATCH
+              from tensorflow.python.keras.backend import batch_set_value
+              from tensorflow.python.ops import collective_ops
+              from virtual.elasticity_callback import COLLECTIVE_ALLREDUCE_GROUP_KEY,\
+                COLLECTIVE_ALLREDUCE_GROUP_SIZE, ELASTICITY_VERBOSE, START_BATCH
+
+              def maybe_log(s):
+                if ELASTICITY_VERBOSE:
+                  logging.info(s)
+
               if (COLLECTIVE_ALLREDUCE_GROUP_KEY is not None and\
                   COLLECTIVE_ALLREDUCE_GROUP_SIZE is not None):
                 # Force retracing
@@ -898,17 +911,48 @@ class Model(network.Network, version_utils.ModelVersionSelector):
                 graph = train_function.get_concrete_function(iterator).graph
                 allreduce_ops = [o for o in graph.get_operations() if\
                   "CollectiveReduce" in o.name and "ReadVariableOp" not in o.name]
-                logging.info("Found %s CollectiveReduce ops in graph %s:" % (len(allreduce_ops), graph))
+                maybe_log("Found %s CollectiveReduce ops in graph %s:" % (len(allreduce_ops), graph))
                 for j, o in enumerate(allreduce_ops):
                   o._set_attr("group_key", attr_value_pb2.AttrValue(i=COLLECTIVE_ALLREDUCE_GROUP_KEY))
                   o._set_attr("group_size", attr_value_pb2.AttrValue(i=COLLECTIVE_ALLREDUCE_GROUP_SIZE))
-                  logging.info(o)
-                logging.info("Set attributes group_key = %s and group_size = %s on all allreduce ops" %\
+                maybe_log("Set attributes group_key = %s and group_size = %s on all allreduce ops" %\
                   (COLLECTIVE_ALLREDUCE_GROUP_KEY, COLLECTIVE_ALLREDUCE_GROUP_SIZE))
+
+                # Broadcast all variables
+                if COLLECTIVE_ALLREDUCE_GROUP_SIZE > 1:
+                  tv = self.trainable_variables
+                  received_variables = []
+                  for i, v in enumerate(tv):
+                    group_size = COLLECTIVE_ALLREDUCE_GROUP_SIZE
+                    group_key = COLLECTIVE_ALLREDUCE_GROUP_KEY
+                    instance_key = COLLECTIVE_ALLREDUCE_GROUP_KEY * 400 + i
+                    # Run the broadcast ops on a GPU if possible
+                    all_gpus = tf.config.experimental.list_logical_devices("GPU")
+                    broadcast_device = all_gpus[0] if len(all_gpus) > 0 else "/device:CPU:0"
+                    with tf.device(broadcast_device):
+                      if self._distribution_strategy.extended._is_chief:
+                        if i == 0:
+                          maybe_log("Broadcasting %s variables" % len(tv))
+                        collective_ops.broadcast_send(v, v.shape, v.dtype, group_size, group_key, instance_key)
+                      else:
+                        if i == 0:
+                          maybe_log("Receiving %s variables from chief" % len(tv))
+                        received_variables.append(collective_ops.broadcast_recv(
+                          v.shape, v.dtype, group_size, group_key, instance_key))
+                  if len(received_variables) > 0:
+                    maybe_log("Received %s variables, applying to model" % len(received_variables))
+                    batch_set_value(list(zip(self.trainable_variables, received_variables)))
+                  logging.info("Broadcast complete")
+
               if START_BATCH is not None:
-                logging.info("Updating batch to %s (was %s)" % (START_BATCH, step))
+                maybe_log("Updating batch to %s (was %s)" % (START_BATCH, step))
                 step = START_BATCH
                 data_handler._current_step = START_BATCH
+
+              # Print the train variables
+              if ELASTICITY_VERBOSE:
+                maybe_log("The first parameter is: %s" %\
+                  tf.reshape(self.trainable_variables[0], [-1])[:5])
 
               tmp_logs = train_function(iterator)
               # Catch OutOfRangeError for Datasets of unknown size.
@@ -1870,6 +1914,10 @@ def _apply_gradients(strategy, optimizer, gradients, trainable_variables):
     # done on scaled gradients, not unscaled gradients, for numeric stability.
     gradients = optimizer._aggregate_gradients(zip(gradients,  # pylint: disable=protected-access
                                                    trainable_variables))
+    from virtual.elasticity_callback import ELASTICITY_VERBOSE
+    if ELASTICITY_VERBOSE:
+      print_ops = [tf.print("The first allreduced gradient is ", tf.reshape(gradients[0], [-1])[:5])]
+
   if isinstance(optimizer, lso.LossScaleOptimizer):
     gradients = optimizer.get_unscaled_gradients(gradients)
   gradients = optimizer._clip_gradients(gradients)  # pylint: disable=protected-access
