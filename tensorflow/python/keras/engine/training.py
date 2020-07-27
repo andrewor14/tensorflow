@@ -500,7 +500,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
   def run_eagerly(self, value):
     self._run_eagerly = value
 
-  def train_step(self, iterator):
+  def train_step(self, iterator, num_virtual_nodes):
     """The logic for one training step.
 
     This method can be overridden to support custom training logic.
@@ -524,8 +524,6 @@ class Model(network.Network, version_utils.ModelVersionSelector):
       `{'loss': 0.2, 'accuracy': 0.7}`.
 
     """
-    num_virtual_nodes = int(os.getenv("NUM_VIRTUAL_NODES_PER_DEVICE") or 1)
-
     aggregated_gradients = None
     for i in range(num_virtual_nodes):
       # Ensure we have finished running the previous virtual node before proceeding
@@ -611,10 +609,10 @@ class Model(network.Network, version_utils.ModelVersionSelector):
     if self.train_function is not None:
       return self.train_function
 
-    def train_function(iterator):
+    def train_function(iterator, num_virtual_nodes):
       iterator = _convert_distributed_iterator(iterator)
       outputs = self.distribute_strategy.run(
-          self.train_step, args=(iterator,))
+          self.train_step, args=(iterator, num_virtual_nodes))
       outputs = reduce_per_replica(
           outputs, self.distribute_strategy, reduction='first')
       return outputs
@@ -870,6 +868,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
             epochs=epochs,
             steps=data_handler.inferred_steps)
 
+      num_virtual_nodes = int(os.getenv("NUM_VIRTUAL_NODES_PER_DEVICE") or 1)
       self.stop_training = False
       train_function = self.make_train_function()
       callbacks.on_train_begin()
@@ -908,7 +907,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
                 # Force retracing
                 self.train_function = None
                 train_function = self.make_train_function()
-                graph = train_function.get_concrete_function(iterator).graph
+                graph = train_function.get_concrete_function(iterator, num_virtual_nodes).graph
                 allreduce_ops = [o for o in graph.get_operations() if\
                   "CollectiveReduce" in o.name and "ReadVariableOp" not in o.name]
                 maybe_log("Found %s CollectiveReduce ops in graph %s:" % (len(allreduce_ops), graph))
@@ -957,7 +956,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
                 maybe_log("The first parameter is: %s" %\
                   tf.reshape(self.trainable_variables[0], [-1])[:5])
 
-              tmp_logs = train_function(iterator)
+              tmp_logs = train_function(iterator, num_virtual_nodes)
               # Catch OutOfRangeError for Datasets of unknown size.
               # This blocks until the batch has finished executing.
               # TODO(b/150292341): Allow multiple async steps here.
@@ -992,7 +991,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
       callbacks.on_train_end()
       return self.history
 
-  def test_step(self, iterator):
+  def test_step(self, iterator, num_virtual_nodes):
     """The logic for one evaluation step.
 
     This method can be overridden to support custom evaluation logic.
@@ -1015,8 +1014,6 @@ class Model(network.Network, version_utils.ModelVersionSelector):
       `tf.keras.callbacks.CallbackList.on_train_batch_end`. Typically, the
       values of the `Model`'s metrics are returned.
     """
-    num_virtual_nodes = int(os.getenv("NUM_VIRTUAL_NODES_PER_DEVICE") or 1)
-
     control_dependencies = []
     for i in range(num_virtual_nodes):
       # Ensure we have finished running the previous virtual node before proceeding
@@ -1059,10 +1056,10 @@ class Model(network.Network, version_utils.ModelVersionSelector):
     if self.test_function is not None:
       return self.test_function
 
-    def test_function(iterator):
+    def test_function(iterator, num_virtual_nodes):
       iterator = _convert_distributed_iterator(iterator)
       outputs = self.distribute_strategy.run(
-          self.test_step, args=(iterator,))
+          self.test_step, args=(iterator, num_virtual_nodes))
       outputs = reduce_per_replica(
           outputs, self.distribute_strategy, reduction='first')
       return outputs
@@ -1190,6 +1187,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
             epochs=1,
             steps=data_handler.inferred_steps)
 
+      num_virtual_nodes = int(os.getenv("NUM_VIRTUAL_NODES_PER_DEVICE") or 1)
       test_function = self.make_test_function()
       callbacks.on_test_begin()
       for _, iterator in data_handler.enumerate_epochs():  # Single epoch.
@@ -1201,7 +1199,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
                 graph_type='test',
                 step_num=step):
               callbacks.on_test_batch_begin(step)
-              tmp_logs = test_function(iterator)
+              tmp_logs = test_function(iterator, num_virtual_nodes)
               # Catch OutOfRangeError for Datasets of unknown size.
               # This blocks until the batch has finished executing.
               # TODO(b/150292341): Allow multiple async steps here.
