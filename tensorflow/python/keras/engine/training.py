@@ -897,7 +897,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
               from tensorflow.python.keras.backend import batch_set_value
               from tensorflow.python.ops import collective_ops
               from virtual.elasticity_callback import COLLECTIVE_ALLREDUCE_GROUP_KEY,\
-                COLLECTIVE_ALLREDUCE_GROUP_SIZE, ELASTICITY_VERBOSE, START_BATCH
+                COLLECTIVE_ALLREDUCE_GROUP_SIZE, ELASTICITY_VERBOSE, START_BATCH, START_EPOCH
 
               def maybe_log(s):
                 if ELASTICITY_VERBOSE:
@@ -945,9 +945,12 @@ class Model(network.Network, version_utils.ModelVersionSelector):
                   logging.info("Broadcast complete")
 
               if START_BATCH is not None:
-                maybe_log("Updating batch to %s (was %s)" % (START_BATCH, step))
+                maybe_log("Updating batch to %s (was %s) and epoch to %s (was %s)" %\
+                  (START_BATCH, step, START_EPOCH, epoch))
                 step = START_BATCH
+                epoch = START_EPOCH
                 data_handler._current_step = START_BATCH
+                data_handler._current_epoch = START_EPOCH
 
               # Print the train variables
               if ELASTICITY_VERBOSE:
