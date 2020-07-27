@@ -868,6 +868,9 @@ class Model(network.Network, version_utils.ModelVersionSelector):
             epochs=epochs,
             steps=data_handler.inferred_steps)
 
+      # TEMPY
+      from virtual.virtual_helper import get_tf_config
+      previous_group_size = len(get_tf_config()["cluster"]["worker"])
       num_virtual_nodes = int(os.getenv("NUM_VIRTUAL_NODES_PER_DEVICE") or 1)
       self.stop_training = False
       train_function = self.make_train_function()
@@ -902,8 +905,17 @@ class Model(network.Network, version_utils.ModelVersionSelector):
                 if ELASTICITY_VERBOSE:
                   logging.info(s)
 
-              if (COLLECTIVE_ALLREDUCE_GROUP_KEY is not None and\
-                  COLLECTIVE_ALLREDUCE_GROUP_SIZE is not None):
+              group_key = COLLECTIVE_ALLREDUCE_GROUP_KEY
+              group_size = COLLECTIVE_ALLREDUCE_GROUP_SIZE
+              if group_key is not None and group_size is not None:
+
+                # Update number of virtual nodes!
+                num_virtual_nodes *= previous_group_size / group_size
+                if not num_virtual_nodes.is_integer():
+                  raise ValueError("Num virtual nodes must be an integer! (was %s)" % num_virtual_nodes)
+                num_virtual_nodes = int(num_virtual_nodes)
+                previous_group_size = group_size
+
                 # Force retracing
                 self.train_function = None
                 train_function = self.make_train_function()
@@ -912,19 +924,17 @@ class Model(network.Network, version_utils.ModelVersionSelector):
                   "CollectiveReduce" in o.name and "ReadVariableOp" not in o.name]
                 maybe_log("Found %s CollectiveReduce ops in graph %s:" % (len(allreduce_ops), graph))
                 for j, o in enumerate(allreduce_ops):
-                  o._set_attr("group_key", attr_value_pb2.AttrValue(i=COLLECTIVE_ALLREDUCE_GROUP_KEY))
-                  o._set_attr("group_size", attr_value_pb2.AttrValue(i=COLLECTIVE_ALLREDUCE_GROUP_SIZE))
+                  o._set_attr("group_key", attr_value_pb2.AttrValue(i=group_key))
+                  o._set_attr("group_size", attr_value_pb2.AttrValue(i=group_size))
                 maybe_log("Set attributes group_key = %s and group_size = %s on all allreduce ops" %\
-                  (COLLECTIVE_ALLREDUCE_GROUP_KEY, COLLECTIVE_ALLREDUCE_GROUP_SIZE))
+                  (group_key, group_size))
 
                 # Broadcast all variables
-                if COLLECTIVE_ALLREDUCE_GROUP_SIZE > 1:
+                if group_size > 1:
                   tv = self.trainable_variables
                   received_variables = []
                   for i, v in enumerate(tv):
-                    group_size = COLLECTIVE_ALLREDUCE_GROUP_SIZE
-                    group_key = COLLECTIVE_ALLREDUCE_GROUP_KEY
-                    instance_key = COLLECTIVE_ALLREDUCE_GROUP_KEY * 400 + i
+                    instance_key = group_key * 400 + i
                     # Run the broadcast ops on a GPU if possible
                     all_gpus = tf.config.experimental.list_logical_devices("GPU")
                     broadcast_device = all_gpus[0] if len(all_gpus) > 0 else "/device:CPU:0"
