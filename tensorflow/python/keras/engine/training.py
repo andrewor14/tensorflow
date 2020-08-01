@@ -516,6 +516,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
 
     Arguments:
       iterator: An iterator of nested structures of `Tensor`s.
+      num_virtual_nodes: Number of virtual nodes to run in this step.
 
     Returns:
       A `dict` containing values that will be passed to
@@ -524,12 +525,12 @@ class Model(network.Network, version_utils.ModelVersionSelector):
       `{'loss': 0.2, 'accuracy': 0.7}`.
 
     """
-    aggregated_gradients = None
-    for i in range(num_virtual_nodes):
+    def while_cond(i, aggregated_gradients):
+      return i < num_virtual_nodes
+    def while_body(i, aggregated_gradients):
       # Ensure we have finished running the previous virtual node before proceeding
-      with tf.control_dependencies(aggregated_gradients or []):
-        print_op = tf.print("Training on virtual node %s/%s" %\
-          (i+1, num_virtual_nodes))
+      with tf.control_dependencies(aggregated_gradients):
+        print_op = tf.print("Training on virtual node", i+1, "/", num_virtual_nodes)
       with tf.control_dependencies([print_op]):
         # These are the only transformations `Model.fit` applies to user-input
         # data when a `tf.data.Dataset` is provided. These utilities will be exposed
@@ -557,14 +558,25 @@ class Model(network.Network, version_utils.ModelVersionSelector):
 
         # Aggregate gradients across virtual nodes
         # We sum them here and divide them later
-        if aggregated_gradients is None:
-          aggregated_gradients = gradients
-        else:
-          if len(aggregated_gradients) != len(gradients):
-            raise ValueError("Wrong number of gradients %s, expected %s" %\
-              (len(gradients), len(aggregated_outputs)))
-          for j in range(len(gradients)):
-            aggregated_gradients[j] += gradients[j]
+        if len(aggregated_gradients) != len(gradients):
+          raise ValueError("Wrong number of gradients %s, expected %s" %\
+            (len(gradients), len(aggregated_gradients)))
+        for j in range(len(gradients)):
+          aggregated_gradients[j] += gradients[j]
+
+        self.compiled_metrics.update_state(y, y_pred, sample_weight)
+      return (i+1, aggregated_gradients)
+
+    # We use tf.while_loop here instead of autograph because of this issue:
+    # https://github.com/tensorflow/tensorflow/issues/33308
+    # For the initial arguments, we create a set of tensors with the same shape as the
+    # trainable variables, assuming that these shapes match the shapes of the gradients.
+    # This is a requirement of tf.while_loop, that the initial arguments must have the
+    # same shapes as the return values of the body function.
+    _, aggregated_gradients = tf.while_loop(
+      while_cond,
+      while_body,
+      (0, [tf.zeros(shape=v.shape, dtype=v.dtype) for v in self.trainable_variables]))
 
     # For custom training steps, users can just write:
     #   trainable_variables = self.trainable_variables
@@ -573,6 +585,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
     # The _apply_gradients call does a few extra steps unnecessary in most cases,
     # such as loss scaling and gradient clipping.
     print_ops = []
+    num_virtual_nodes = tf.cast(num_virtual_nodes, aggregated_gradients[0].dtype)
     for j in range(len(aggregated_gradients)):
       aggregated_gradients[j] /= num_virtual_nodes
       from virtual.elasticity_callback import ELASTICITY_VERBOSE
@@ -583,7 +596,6 @@ class Model(network.Network, version_utils.ModelVersionSelector):
       _apply_gradients(self.distribute_strategy, self.optimizer,
         aggregated_gradients, self.trainable_variables)
 
-    self.compiled_metrics.update_state(y, y_pred, sample_weight)
     return {m.name: m.result() for m in self.metrics}
 
   def make_train_function(self):
@@ -892,6 +904,10 @@ class Model(network.Network, version_utils.ModelVersionSelector):
                 step_num=step,
                 batch_size=batch_size):
               callbacks.on_train_batch_begin(step)
+              # Pass in num_virtual_nodes as a tf.constant here to prevent the function
+              # from being retraced every time this number changes
+              num_virtual_nodes = int(os.getenv("NUM_VIRTUAL_NODES_PER_DEVICE") or 1)
+              num_virtual_nodes = tf.constant(num_virtual_nodes)
 
               # TEMPY
               from absl import logging
@@ -1018,30 +1034,32 @@ class Model(network.Network, version_utils.ModelVersionSelector):
 
     Arguments:
       iterator: An iterator of nested structures of `Tensor`s.
+      num_virtual_nodes: Number of virtual nodes to run in this step.
 
     Returns:
       A `dict` containing values that will be passed to
       `tf.keras.callbacks.CallbackList.on_train_batch_end`. Typically, the
       values of the `Model`'s metrics are returned.
     """
-    control_dependencies = []
-    for i in range(num_virtual_nodes):
+    def while_cond(i, deps):
+      return i < num_virtual_nodes
+    def while_body(i, deps):
       # Ensure we have finished running the previous virtual node before proceeding
-      with tf.control_dependencies(control_dependencies):
-        print_op = tf.print("Evaluating on virtual node %s/%s" %\
-          (i+1, num_virtual_nodes))
+      with tf.control_dependencies(deps):
+        print_op = tf.print("Evaluating on virtual node ", i+1, "/", num_virtual_nodes)
       with tf.control_dependencies([print_op]):
         data = next(iterator)
         data = data_adapter.expand_1d(data)
         x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
-
         y_pred = self(x, training=False)
+        self.compiled_metrics.update_state(y, y_pred, sample_weight)
         # Updates stateful loss metrics.
         total_loss = self.compiled_loss(
             y, y_pred, sample_weight, regularization_losses=self.losses)
-        control_dependencies = [total_loss]
-
-    self.compiled_metrics.update_state(y, y_pred, sample_weight)
+      return (i+1, [total_loss])
+    # We use tf.while_loop here instead of autograph because of this issue:
+    # https://github.com/tensorflow/tensorflow/issues/33308
+    tf.while_loop(while_cond, while_body, (0, [0.0]))
     return {m.name: m.result() for m in self.metrics}
 
   def make_test_function(self):
@@ -1209,6 +1227,10 @@ class Model(network.Network, version_utils.ModelVersionSelector):
                 graph_type='test',
                 step_num=step):
               callbacks.on_test_batch_begin(step)
+              # Pass in num_virtual_nodes as a tf.constant here to prevent the function
+              # from being retraced every time this number changes
+              num_virtual_nodes = int(os.getenv("NUM_VIRTUAL_NODES_PER_DEVICE") or 1)
+              num_virtual_nodes = tf.constant(num_virtual_nodes)
               tmp_logs = test_function(iterator, num_virtual_nodes)
               # Catch OutOfRangeError for Datasets of unknown size.
               # This blocks until the batch has finished executing.
