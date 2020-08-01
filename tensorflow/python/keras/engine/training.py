@@ -584,7 +584,6 @@ class Model(network.Network, version_utils.ModelVersionSelector):
     #   self.optimizer.apply_gradients(zip(gradients, trainable_variables))
     # The _apply_gradients call does a few extra steps unnecessary in most cases,
     # such as loss scaling and gradient clipping.
-    num_virtual_nodes = tf.cast(num_virtual_nodes, aggregated_gradients[0].dtype)
     for j in range(len(aggregated_gradients)):
       aggregated_gradients[j] /= num_virtual_nodes
     _apply_gradients(self.distribute_strategy, self.optimizer,
@@ -894,10 +893,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
                 step_num=step,
                 batch_size=batch_size):
               callbacks.on_train_batch_begin(step)
-              # Pass in num_virtual_nodes as a tf.constant here to prevent the function
-              # from being retraced every time this number changes
               num_virtual_nodes = int(os.getenv("NUM_VIRTUAL_NODES_PER_DEVICE") or 1)
-              num_virtual_nodes = tf.constant(num_virtual_nodes)
               tmp_logs = train_function(iterator, num_virtual_nodes)
               # Catch OutOfRangeError for Datasets of unknown size.
               # This blocks until the batch has finished executing.
@@ -1142,10 +1138,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
                 graph_type='test',
                 step_num=step):
               callbacks.on_test_batch_begin(step)
-              # Pass in num_virtual_nodes as a tf.constant here to prevent the function
-              # from being retraced every time this number changes
               num_virtual_nodes = int(os.getenv("NUM_VIRTUAL_NODES_PER_DEVICE") or 1)
-              num_virtual_nodes = tf.constant(num_virtual_nodes)
               tmp_logs = test_function(iterator, num_virtual_nodes)
               # Catch OutOfRangeError for Datasets of unknown size.
               # This blocks until the batch has finished executing.
