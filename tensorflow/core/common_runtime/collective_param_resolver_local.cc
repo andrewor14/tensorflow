@@ -88,8 +88,6 @@ void CollectiveParamResolverLocal::CompleteGroupLocal(
     mutex_lock l(group_mu_);
     auto it = group_table_.find(cp->group.group_key);
     if (it == group_table_.end()) {
-      VLOG(0) << "ANDREW CompleteGroupLocal found new group key " << cp->group.group_key
-        << ", clearing instance table";
       should_clear_instance_table = true;
       gr = new GroupRec;
       gr->group.group_key = cp->group.group_key;
@@ -594,9 +592,6 @@ void CollectiveParamResolverLocal::FindInstanceRec(
       irec = it->second.get();
       {
         mutex_lock l(irec->in_mu);
-        VLOG(0) << "ANDREW: FindInstanceRec found old InstanceRec for key " << cp->instance.instance_key
-          << " with " << irec->shared.instance.device_names.size() << " devices (expected " <<
-          gr->device_list.size() << ")";
         if (irec->is_init) {
           exit_outside_locks = true;
         } else {
@@ -610,7 +605,6 @@ void CollectiveParamResolverLocal::FindInstanceRec(
       // Create new InstanceRec.
       irec = new InstanceRec;
       instance_table_[cp->instance.instance_key].reset(irec);
-      VLOG(0) << "ANDREW: FindInstanceRec creating new InstanceRec for key " << cp->instance.instance_key;
     }
   }
   if (exit_outside_locks) {
@@ -728,32 +722,10 @@ void CollectiveParamResolverLocal::CompleteInstanceLocal(
   DCHECK_EQ(cp->group.device_type, gr->group.device_type);
   cp->group = gr->group;
 
-  /*
-  std::stringstream ss;
-  ss << "ANDREW: CompleteInstanceLocal GroupRec id = " << gr->group.group_key
-    << ", size = " << gr->group.group_size << ", device_set:\n";
-  for (auto it = gr->device_set.begin(); it != gr->device_set.end(); it++) {
-    ss << "  " << *it << "\n";
-  }
-  ss << "device_list:\n";
-  for (int i=0; i < gr->device_list.size(); i++) {
-    ss << "  " << gr->device_list[i] << "\n";
-  }
-  VLOG(0) << ss.str();
-  */
-
   // Get the shared InstanceRec for this instance.
   FindInstanceRec(gr, cp,
                   [this, device, gr, cp, is_source, done](const Status& s,
                                                           InstanceRec* ir) {
-                    std::stringstream ss;
-                    ss << "ANDREW: FindInstanceRec callback";
-                    ss << ", instance key = " << cp->instance.instance_key;
-                    ss << ", GroupRec num devices = (" << gr->device_set.size();
-                    ss << ", " << gr->device_list.size() << ")";
-                    ss << ", InstanceRec num devices = " << ir->shared.instance.device_names.size();
-                    ss << ", is_init = " << ir->is_init;
-                    VLOG(0) << ss.str();
                     if (s.ok()) {
                       CompleteInstanceFromInitializedIRec(device, gr, cp, ir,
                                                           is_source, done);
