@@ -924,6 +924,8 @@ class Model(network.Network, version_utils.ModelVersionSelector):
                 if not num_virtual_nodes.is_integer():
                   raise ValueError("Num virtual nodes must be an integer! (was %s)" % num_virtual_nodes)
                 num_virtual_nodes = int(num_virtual_nodes)
+                # Hack: use the right number of virtual nodes for eval
+                os.environ["NUM_VIRTUAL_NODES_PER_DEVICE"] = str(num_virtual_nodes)
                 previous_group_size = group_size
 
                 # Force retracing
