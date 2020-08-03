@@ -503,7 +503,7 @@ class OptimizerV2(trackable.Trackable):
       if experimental_aggregate_gradients:
         reduced_grads = self._aggregate_gradients(grads_and_vars)
         if ELASTICITY_VERBOSE:
-          print_ops = [tf.print("The first allreduced gradient is ",\
+          print_ops = [tf.print("The first allreduced gradient is",\
             tf.reshape(reduced_grads[0], [-1])[:5])]
         var_list = [v for _, v in grads_and_vars]
         grads_and_vars = list(zip(reduced_grads, var_list))

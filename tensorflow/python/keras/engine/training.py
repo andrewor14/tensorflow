@@ -589,7 +589,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
       aggregated_gradients[j] /= num_virtual_nodes
       from virtual.elasticity_callback import ELASTICITY_VERBOSE
       if ELASTICITY_VERBOSE and j == 0:
-        print_ops = [tf.print("The first gradient is ", tf.reshape(aggregated_gradients[j], [-1])[:5])]
+        print_ops = [tf.print("The first gradient is", tf.reshape(aggregated_gradients[j], [-1])[:5])]
 
     with tf.control_dependencies(print_ops):
       _apply_gradients(self.distribute_strategy, self.optimizer,
@@ -879,9 +879,8 @@ class Model(network.Network, version_utils.ModelVersionSelector):
             epochs=epochs,
             steps=data_handler.inferred_steps)
 
-      # TEMPY
       from virtual.virtual_helper import get_tf_config
-      previous_group_size = len(get_tf_config()["cluster"]["worker"])
+      group_size = len(get_tf_config()["cluster"]["worker"])
       num_virtual_nodes = int(os.getenv("NUM_VIRTUAL_NODES_PER_DEVICE") or 1)
       self.stop_training = False
       train_function = self.make_train_function()
@@ -903,80 +902,21 @@ class Model(network.Network, version_utils.ModelVersionSelector):
                 step_num=step,
                 batch_size=batch_size):
               callbacks.on_train_batch_begin(step)
-              # TEMPY
-              from absl import logging
-              from tensorflow.core.framework import attr_value_pb2
-              from tensorflow.python.keras.backend import batch_set_value
-              from tensorflow.python.ops import collective_ops
-              from virtual.elasticity_callback import COLLECTIVE_ALLREDUCE_GROUP_KEY,\
-                COLLECTIVE_ALLREDUCE_GROUP_SIZE, ELASTICITY_VERBOSE, START_BATCH, START_EPOCH
 
-              def maybe_log(s):
-                if ELASTICITY_VERBOSE:
-                  logging.info(s)
-
-              group_key = COLLECTIVE_ALLREDUCE_GROUP_KEY
-              group_size = COLLECTIVE_ALLREDUCE_GROUP_SIZE
-              if group_key is not None and group_size is not None:
-
-                # Update number of virtual nodes!
-                num_virtual_nodes *= previous_group_size / group_size
-                if not num_virtual_nodes.is_integer():
-                  raise ValueError("Num virtual nodes must be an integer! (was %s)" % num_virtual_nodes)
-                num_virtual_nodes = int(num_virtual_nodes)
-                # Hack: use the right number of virtual nodes for eval
-                os.environ["NUM_VIRTUAL_NODES_PER_DEVICE"] = str(num_virtual_nodes)
-                previous_group_size = group_size
-
-                # Force retracing
-                self.train_function = None
-                train_function = self.make_train_function()
-                graph = train_function.get_concrete_function(iterator, num_virtual_nodes).graph
-                allreduce_ops = [o for o in graph.get_operations() if\
-                  "CollectiveReduce" in o.name and "ReadVariableOp" not in o.name]
-                maybe_log("Found %s CollectiveReduce ops in graph %s:" % (len(allreduce_ops), graph))
-                for j, o in enumerate(allreduce_ops):
-                  o._set_attr("group_key", attr_value_pb2.AttrValue(i=group_key))
-                  o._set_attr("group_size", attr_value_pb2.AttrValue(i=group_size))
-                maybe_log("Set attributes group_key = %s and group_size = %s on all allreduce ops" %\
-                  (group_key, group_size))
-
-                # Broadcast all variables
-                if group_size > 1:
-                  tv = self.trainable_variables
-                  received_variables = []
-                  for i, v in enumerate(tv):
-                    instance_key = group_key * 400 + i
-                    # Run the broadcast ops on a GPU if possible
-                    all_gpus = tf.config.experimental.list_logical_devices("GPU")
-                    broadcast_device = all_gpus[0] if len(all_gpus) > 0 else "/device:CPU:0"
-                    with tf.device(broadcast_device):
-                      if self._distribution_strategy.extended._is_chief:
-                        if i == 0:
-                          maybe_log("Broadcasting %s variables" % len(tv))
-                        collective_ops.broadcast_send(v, v.shape, v.dtype, group_size, group_key, instance_key)
-                      else:
-                        if i == 0:
-                          maybe_log("Receiving %s variables from chief" % len(tv))
-                        received_variables.append(collective_ops.broadcast_recv(
-                          v.shape, v.dtype, group_size, group_key, instance_key))
-                  if len(received_variables) > 0:
-                    maybe_log("Received %s variables, applying to model" % len(received_variables))
-                    batch_set_value(list(zip(self.trainable_variables, received_variables)))
-                  logging.info("Broadcast complete")
-
-              if START_BATCH is not None:
-                maybe_log("Updating batch to %s (was %s) and epoch to %s (was %s)" %\
-                  (START_BATCH, step, START_EPOCH, epoch))
-                step = START_BATCH
-                epoch = START_EPOCH
-                data_handler._current_step = START_BATCH
-                data_handler._current_epoch = START_EPOCH
-
-              # Print the train variables
-              if ELASTICITY_VERBOSE:
-                maybe_log("The first parameter is: %s" %\
-                  tf.reshape(self.trainable_variables[0], [-1])[:5])
+              # Handle cluster configuration changes if elasticity is enabled
+              if os.getenv("ENABLE_ELASTICITY", "").lower() == "true":
+                from absl import logging
+                elasticity_state = self.elasticity_helper(num_virtual_nodes, group_size, iterator)
+                if elasticity_state is not None:
+                  num_virtual_nodes, group_size, new_step, new_epoch = elasticity_state
+                  # Update step and epoch on the new workers
+                  if new_step is not None and new_epoch is not None:
+                    logging.info("Updating batch to %s (was %s) and epoch to %s (was %s)" %\
+                      (new_step, step, new_epoch, epoch))
+                    step = new_step
+                    epoch = new_epoch
+                    data_handler._current_step = new_step
+                    data_handler._current_epoch = new_epoch
 
               tmp_logs = train_function(iterator, num_virtual_nodes)
               # Catch OutOfRangeError for Datasets of unknown size.
@@ -1012,6 +952,89 @@ class Model(network.Network, version_utils.ModelVersionSelector):
 
       callbacks.on_train_end()
       return self.history
+
+  def elasticity_helper(self, previous_num_virtual_nodes, previous_group_size, data_iterator):
+    """
+    Update the graph to reflect the new cluster configuration, if applicable.
+
+    This looks for collective allreduce operations in the graph and replaces all group keys
+    and instance keys in these ops. If there are new workers, the chief will broadcast its
+    parameters to everyone to ensure the model is synchronized.
+
+    Return a 4-tuple (new num virtual nodes, new group size, new batch, new epoch) if there
+    is a change in cluste configuration, else None.
+    """
+    from absl import logging
+    from tensorflow.core.framework import attr_value_pb2
+    from tensorflow.python.keras.backend import batch_set_value
+    from tensorflow.python.ops import collective_ops
+    from virtual.elasticity_callback import BROADCAST_INSTANCE_KEY_MULTIPLE,\
+      COLLECTIVE_ALLREDUCE_GROUP_KEY, COLLECTIVE_ALLREDUCE_GROUP_SIZE,\
+      ELASTICITY_VERBOSE, START_BATCH, START_EPOCH
+
+    def maybe_log(s):
+      if ELASTICITY_VERBOSE:
+        logging.info("[Elasticity helper] %s" % s)
+
+    group_key = COLLECTIVE_ALLREDUCE_GROUP_KEY
+    group_size = COLLECTIVE_ALLREDUCE_GROUP_SIZE
+    num_virtual_nodes = previous_num_virtual_nodes
+    if group_key is not None and group_size is not None:
+      # Update number of virtual nodes
+      num_virtual_nodes *= previous_group_size / group_size
+      if not num_virtual_nodes.is_integer():
+        raise ValueError("Num virtual nodes must be an integer! (was %s)" % num_virtual_nodes)
+      num_virtual_nodes = int(num_virtual_nodes)
+      # Hack: use the right number of virtual nodes for eval
+      os.environ["NUM_VIRTUAL_NODES_PER_DEVICE"] = str(num_virtual_nodes)
+
+      # Force retracing
+      self.train_function = None
+      train_function = self.make_train_function()
+      graph = train_function.get_concrete_function(data_iterator, num_virtual_nodes).graph
+      allreduce_ops = [o for o in graph.get_operations() if\
+        "CollectiveReduce" in o.name and "ReadVariableOp" not in o.name]
+      maybe_log("Found %s CollectiveReduce ops in graph %s:" % (len(allreduce_ops), graph))
+      for j, o in enumerate(allreduce_ops):
+        o._set_attr("group_key", attr_value_pb2.AttrValue(i=group_key))
+        o._set_attr("group_size", attr_value_pb2.AttrValue(i=group_size))
+      maybe_log("Set attributes group_key = %s and group_size = %s on all allreduce ops" %\
+        (group_key, group_size))
+
+      # Broadcast all variables
+      # TODO: only do this if there are new workers
+      if group_size > 1:
+        tv = self.trainable_variables
+        received_variables = []
+        for i, v in enumerate(tv):
+          instance_key = group_key * BROADCAST_INSTANCE_KEY_MULTIPLE + i
+          # Run the broadcast ops on a GPU if possible
+          all_gpus = tf.config.experimental.list_logical_devices("GPU")
+          broadcast_device = all_gpus[0] if len(all_gpus) > 0 else "/device:CPU:0"
+          with tf.device(broadcast_device):
+            if self._distribution_strategy.extended._is_chief:
+              if i == 0:
+                maybe_log("Broadcasting %s variables" % len(tv))
+              collective_ops.broadcast_send(v, v.shape, v.dtype, group_size, group_key, instance_key)
+            else:
+              if i == 0:
+                maybe_log("Receiving %s variables from chief" % len(tv))
+              received_variables.append(collective_ops.broadcast_recv(
+                v.shape, v.dtype, group_size, group_key, instance_key))
+        if len(received_variables) > 0:
+          maybe_log("Received %s variables, applying to model" % len(received_variables))
+          batch_set_value(list(zip(self.trainable_variables, received_variables)))
+        maybe_log("Broadcast complete")
+
+    # Print the train variables
+    if ELASTICITY_VERBOSE:
+      maybe_log("The first parameter is: %s" %\
+        tf.reshape(self.trainable_variables[0], [-1])[:5])
+
+    if group_size is not None:
+      return (num_virtual_nodes, group_size, START_BATCH, START_EPOCH)
+    else:
+      return None
 
   def test_step(self, iterator, num_virtual_nodes):
     """The logic for one evaluation step.
@@ -1933,6 +1956,7 @@ def _apply_gradients(strategy, optimizer, gradients, trainable_variables):
       not isinstance(strategy.extended,
                      parameter_server_strategy.ParameterServerStrategyExtended))
 
+  print_ops = []
   if aggregate_grads_outside_optimizer:
     # We aggregate gradients before unscaling them, in case a subclass of
     # LossScaleOptimizer all-reduces in fp16. All-reducing in fp16 can only be
@@ -1941,18 +1965,19 @@ def _apply_gradients(strategy, optimizer, gradients, trainable_variables):
                                                    trainable_variables))
     from virtual.elasticity_callback import ELASTICITY_VERBOSE
     if ELASTICITY_VERBOSE:
-      print_ops = [tf.print("The first allreduced gradient is ", tf.reshape(gradients[0], [-1])[:5])]
+      print_ops = [tf.print("The first allreduced gradient is", tf.reshape(gradients[0], [-1])[:5])]
 
-  if isinstance(optimizer, lso.LossScaleOptimizer):
-    gradients = optimizer.get_unscaled_gradients(gradients)
-  gradients = optimizer._clip_gradients(gradients)  # pylint: disable=protected-access
-  if trainable_variables:
-    if aggregate_grads_outside_optimizer:
-      optimizer.apply_gradients(
-          zip(gradients, trainable_variables),
-          experimental_aggregate_gradients=False)
-    else:
-      optimizer.apply_gradients(zip(gradients, trainable_variables))
+  with tf.control_dependencies(print_ops):
+    if isinstance(optimizer, lso.LossScaleOptimizer):
+      gradients = optimizer.get_unscaled_gradients(gradients)
+    gradients = optimizer._clip_gradients(gradients)  # pylint: disable=protected-access
+    if trainable_variables:
+      if aggregate_grads_outside_optimizer:
+        optimizer.apply_gradients(
+            zip(gradients, trainable_variables),
+            experimental_aggregate_gradients=False)
+      else:
+        optimizer.apply_gradients(zip(gradients, trainable_variables))
 
 def _convert_distributed_iterator(iterator):
   """
