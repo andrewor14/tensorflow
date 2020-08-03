@@ -1121,13 +1121,15 @@ class DataHandler(object):
   def enumerate_epochs(self):
     """Yields `(epoch, tf.data.Iterator)`."""
     data_iterator = iter(self._dataset)
-    for epoch in range(self._initial_epoch, self._epochs):
+    self._current_epoch = self._initial_epoch
+    while self._current_epoch < self._epochs:
       if self._insufficient_data:  # Set by `catch_stop_iteration`.
         break
       if self._adapter.should_recreate_iterator():
         data_iterator = iter(self._dataset)
-      yield epoch, data_iterator
+      yield self._current_epoch, data_iterator
       self._adapter.on_epoch_end()
+      self._current_epoch += 1
 
   @contextlib.contextmanager
   def catch_stop_iteration(self):
