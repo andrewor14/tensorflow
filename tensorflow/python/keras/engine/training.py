@@ -500,7 +500,52 @@ class Model(network.Network, version_utils.ModelVersionSelector):
   def run_eagerly(self, value):
     self._run_eagerly = value
 
-  def train_step(self, iterator, num_virtual_nodes):
+  def train_step(self, data):
+    """The logic for one training step.
+
+    This method can be overridden to support custom training logic.
+    This method is called by `Model.make_train_function`.
+
+    This method should contain the mathemetical logic for one step of training.
+    This typically includes the forward pass, loss calculation, backpropagation,
+    and metric updates.
+
+    Configuration details for *how* this logic is run (e.g. `tf.function` and
+    `tf.distribute.Strategy` settings), should be left to
+    `Model.make_train_function`, which can also be overridden.
+
+    Arguments:
+      data: A nested structure of `Tensor`s.
+
+    Returns:
+      A `dict` containing values that will be passed to
+      `tf.keras.callbacks.CallbackList.on_train_batch_end`. Typically, the
+      values of the `Model`'s metrics are returned. Example:
+      `{'loss': 0.2, 'accuracy': 0.7}`.
+    """
+    # These are the only transformations `Model.fit` applies to user-input
+    # data when a `tf.data.Dataset` is provided. These utilities will be exposed
+    # publicly.
+    data = data_adapter.expand_1d(data)
+    x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
+
+    with backprop.GradientTape() as tape:
+      y_pred = self(x, training=True)
+      loss = self.compiled_loss(
+          y, y_pred, sample_weight, regularization_losses=self.losses)
+    # For custom training steps, users can just write:
+    #   trainable_variables = self.trainable_variables
+    #   gradients = tape.gradient(loss, trainable_variables)
+    #   self.optimizer.apply_gradients(zip(gradients, trainable_variables))
+    # The _minimize call does a few extra steps unnecessary in most cases,
+    # such as loss scaling and gradient clipping.
+    _minimize(self.distribute_strategy, tape, self.optimizer, loss,
+              self.trainable_variables)
+
+    self.compiled_metrics.update_state(y, y_pred, sample_weight)
+    return {m.name: m.result() for m in self.metrics}
+
+  def virtual_train_step(self, iterator, num_virtual_nodes):
     """The logic for one training step.
 
     This method can be overridden to support custom training logic.
@@ -620,10 +665,20 @@ class Model(network.Network, version_utils.ModelVersionSelector):
     if self.train_function is not None:
       return self.train_function
 
+    disable_virtual_nodes = os.getenv("DISABLE_VIRTUAL_NODES", "").lower() == "true"
+
     def train_function(iterator, num_virtual_nodes):
-      iterator = _convert_distributed_iterator(iterator)
-      outputs = self.distribute_strategy.run(
-          self.train_step, args=(iterator, num_virtual_nodes))
+      if disable_virtual_nodes:
+          from absl import logging
+          if num_virtual_nodes > 1:
+              raise ValueError("NUM_VIRTUAL_NODES_PER_DEVICE is set but virtual nodes is disabled")
+          logging.info("Running non-virtual train step")
+          outputs = self.distribute_strategy.run(
+              self.train_step, args=(next(iterator),))
+      else:
+          iterator = _convert_distributed_iterator(iterator)
+          outputs = self.distribute_strategy.run(
+              self.virtual_train_step, args=(iterator, num_virtual_nodes))
       outputs = reduce_per_replica(
           outputs, self.distribute_strategy, reduction='first')
       return outputs
@@ -1036,7 +1091,42 @@ class Model(network.Network, version_utils.ModelVersionSelector):
     else:
       return None
 
-  def test_step(self, iterator, num_virtual_nodes):
+  def test_step(self, data):
+    """The logic for one evaluation step.
+
+    This method can be overridden to support custom evaluation logic.
+    This method is called by `Model.make_test_function`.
+
+    This function should contain the mathemetical logic for one step of
+    evaluation.
+
+    This typically includes the forward pass, loss calculation, and metrics
+    updates.
+
+    Configuration details for *how* this logic is run (e.g. `tf.function` and
+    `tf.distribute.Strategy` settings), should be left to
+    `Model.make_test_function`, which can also be overridden.
+
+    Arguments:
+      data: A nested structure of `Tensor`s.
+
+    Returns:
+      A `dict` containing values that will be passed to
+      `tf.keras.callbacks.CallbackList.on_train_batch_end`. Typically, the
+      values of the `Model`'s metrics are returned.
+    """
+    data = data_adapter.expand_1d(data)
+    x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
+
+    y_pred = self(x, training=False)
+    # Updates stateful loss metrics.
+    self.compiled_loss(
+        y, y_pred, sample_weight, regularization_losses=self.losses)
+
+    self.compiled_metrics.update_state(y, y_pred, sample_weight)
+    return {m.name: m.result() for m in self.metrics}
+
+  def virtual_test_step(self, iterator, num_virtual_nodes):
     """The logic for one evaluation step.
 
     This method can be overridden to support custom evaluation logic.
@@ -1103,10 +1193,20 @@ class Model(network.Network, version_utils.ModelVersionSelector):
     if self.test_function is not None:
       return self.test_function
 
+    disable_virtual_nodes = os.getenv("DISABLE_VIRTUAL_NODES", "").lower() == "true"
+
     def test_function(iterator, num_virtual_nodes):
-      iterator = _convert_distributed_iterator(iterator)
-      outputs = self.distribute_strategy.run(
-          self.test_step, args=(iterator, num_virtual_nodes))
+      if disable_virtual_nodes:
+          from absl import logging
+          if num_virtual_nodes > 1:
+              raise ValueError("NUM_VIRTUAL_NODES_PER_DEVICE is set but virtual nodes is disabled")
+          logging.info("Running non-virtual test step")
+          outputs = self.distribute_strategy.run(
+              self.test_step, args=(next(iterator),))
+      else:
+          iterator = _convert_distributed_iterator(iterator)
+          outputs = self.distribute_strategy.run(
+              self.virtual_test_step, args=(iterator, num_virtual_nodes))
       outputs = reduce_per_replica(
           outputs, self.distribute_strategy, reduction='first')
       return outputs
@@ -1929,6 +2029,36 @@ def _tpu_multi_host_concat(v, strategy):
   return concat(ordered_replicas)
 
 
+def _minimize(strategy, tape, optimizer, loss, trainable_variables):
+  """Minimizes loss for one step by updating `trainable_variables`.
+
+  This is roughly equivalent to
+
+  ```python
+  gradients = tape.gradient(loss, trainable_variables)
+  self.optimizer.apply_gradients(zip(gradients, trainable_variables))
+  ```
+
+  However, this function also applies gradient clipping and loss scaling if the
+  optimizer is a LossScaleOptimizer.
+
+  Args:
+    strategy: `tf.distribute.Strategy`.
+    tape: A gradient tape. The loss must have been computed under this tape.
+    optimizer: The optimizer used to minimize the loss.
+    loss: The loss tensor.
+    trainable_variables: The variables that will be updated in order to minimize
+      the loss.
+  """
+
+  with tape:
+    if isinstance(optimizer, lso.LossScaleOptimizer):
+      loss = optimizer.get_scaled_loss(loss)
+
+  gradients = tape.gradient(loss, trainable_variables)
+  _apply_gradients(strategy, optimizer, gradients, trainable_variables)
+
+
 def _apply_gradients(strategy, optimizer, gradients, trainable_variables):
   """Apply the given gradients by updating `trainable_variables`.
 
@@ -1978,6 +2108,7 @@ def _apply_gradients(strategy, optimizer, gradients, trainable_variables):
             experimental_aggregate_gradients=False)
       else:
         optimizer.apply_gradients(zip(gradients, trainable_variables))
+
 
 def _convert_distributed_iterator(iterator):
   """
