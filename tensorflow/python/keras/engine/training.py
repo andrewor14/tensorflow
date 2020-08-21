@@ -938,9 +938,9 @@ class Model(network.Network, version_utils.ModelVersionSelector):
       train_function = self.make_train_function()
       callbacks.on_train_begin()
 
-      from virtual.elasticity_callback import ENABLE_ELASTICITY, NEW_CLUSTER_SIZE
-      num_virtual_nodes = int(os.getenv("NUM_VIRTUAL_NODES_PER_DEVICE") or 1)
-      cluster_size = NEW_CLUSTER_SIZE if ENABLE_ELASTICITY else None
+      from virtual.elasticity_callback import ENABLE_ELASTICITY
+      from virtual.virtual_helper import NUM_VIRTUAL_NODES_PER_DEVICE
+      num_virtual_nodes = int(os.getenv(NUM_VIRTUAL_NODES_PER_DEVICE) or 1)
       # Handle fault-tolerance for multi-worker.
       # TODO(omalleyt): Fix the ordering issues that mean this has to
       # happen after `callbacks.on_train_begin`.
@@ -960,20 +960,25 @@ class Model(network.Network, version_utils.ModelVersionSelector):
               callbacks.on_train_batch_begin(step)
 
               # Handle cluster configuration changes if elasticity is enabled
-              from virtual.elasticity_callback import ENABLE_ELASTICITY
               if ENABLE_ELASTICITY:
                 from absl import logging
-                elasticity_state = self.elasticity_helper(num_virtual_nodes, cluster_size, iterator)
-                if elasticity_state is not None:
-                  num_virtual_nodes, cluster_size, new_step, new_epoch = elasticity_state
+                from virtual.elasticity_callback import\
+                  NUM_VIRTUAL_NODES, START_BATCH, START_EPOCH
+                if NUM_VIRTUAL_NODES is not None:
+                  # Force retracing
+                  self.train_function = None
+                  self.make_train_function()
+                  num_virtual_nodes = NUM_VIRTUAL_NODES
                   # Update step and epoch on the new workers
-                  if new_step is not None and new_epoch is not None:
+                  if START_BATCH is not None and START_EPOCH is not None:
                     logging.info("Updating batch to %s (was %s) and epoch to %s (was %s)" %\
-                      (new_step, step, new_epoch, epoch))
-                    step = new_step
-                    epoch = new_epoch
-                    data_handler._current_step = new_step
-                    data_handler._current_epoch = new_epoch
+                      (START_BATCH, step, START_EPOCH, epoch))
+                    step = START_BATCH
+                    epoch = START_EPOCH
+                    data_handler._current_step = START_BATCH
+                    data_handler._current_epoch = START_EPOCH
+                  # Hack: use the right number of virtual nodes for eval
+                  os.environ[NUM_VIRTUAL_NODES_PER_DEVICE] = str(NUM_VIRTUAL_NODES)
 
               tmp_logs = train_function(iterator, num_virtual_nodes)
               # Catch OutOfRangeError for Datasets of unknown size.
@@ -1009,75 +1014,6 @@ class Model(network.Network, version_utils.ModelVersionSelector):
 
       callbacks.on_train_end()
       return self.history
-
-  def elasticity_helper(self, previous_num_virtual_nodes, previous_cluster_size, data_iterator):
-    """
-    Update the graph to reflect the new cluster configuration, if applicable.
-
-    This looks for collective allreduce operations in the graph and replaces all group keys
-    and instance keys in these ops. If there are new workers, the chief will broadcast its
-    parameters to everyone to ensure the model is synchronized.
-
-    Return a 4-tuple (new num virtual nodes, new cluster size, new batch, new epoch) if there
-    is a change in cluster configuration, else None.
-    """
-    from absl import logging
-    from tensorflow.python.keras.backend import batch_set_value
-    from virtual.elasticity_callback import NEW_CLUSTER_SIZE, ELASTICITY_VERBOSE
-    from virtual.elasticity_callback import START_BATCH, START_EPOCH
-
-    def maybe_log(s):
-      if ELASTICITY_VERBOSE:
-        logging.info("[Elasticity helper] %s" % s)
-
-    cluster_size = NEW_CLUSTER_SIZE
-    num_virtual_nodes = previous_num_virtual_nodes
-    if cluster_size is not None:
-      # Update number of virtual nodes
-      num_virtual_nodes *= previous_cluster_size / cluster_size
-      if not num_virtual_nodes.is_integer():
-        raise ValueError("Num virtual nodes must be an integer! (was %s)" % num_virtual_nodes)
-      num_virtual_nodes = int(num_virtual_nodes)
-      # Hack: use the right number of virtual nodes for eval
-      os.environ["NUM_VIRTUAL_NODES_PER_DEVICE"] = str(num_virtual_nodes)
-      # Force retracing
-      self.train_function = None
-      self.make_train_function()
-
-      # Broadcast all variables
-      # TODO: only do this if there are new workers
-      #if cluster_size > 1:
-      #  tv = self.trainable_variables
-      #  received_variables = []
-      #  for i, v in enumerate(tv):
-      #    instance_key = group_key * BROADCAST_INSTANCE_KEY_MULTIPLE + i
-      #    # Run the broadcast ops on a GPU if possible
-      #    all_gpus = tf.config.experimental.list_logical_devices("GPU")
-      #    broadcast_device = all_gpus[0] if len(all_gpus) > 0 else "/device:CPU:0"
-      #    with tf.device(broadcast_device):
-      #      if self._distribution_strategy.extended._is_chief:
-      #        if i == 0:
-      #          maybe_log("Broadcasting %s variables" % len(tv))
-      #        collective_ops.broadcast_send(v, v.shape, v.dtype, cluster_size, group_key, instance_key)
-      #      else:
-      #        if i == 0:
-      #          maybe_log("Receiving %s variables from chief" % len(tv))
-      #        received_variables.append(collective_ops.broadcast_recv(
-      #          v.shape, v.dtype, cluster_size, group_key, instance_key))
-      #  if len(received_variables) > 0:
-      #    maybe_log("Received %s variables, applying to model" % len(received_variables))
-      #    batch_set_value(list(zip(self.trainable_variables, received_variables)))
-      #  maybe_log("Broadcast complete")
-
-    # Print the train variables
-    if ELASTICITY_VERBOSE:
-      maybe_log("The first parameter is: %s" %\
-        tf.reshape(self.trainable_variables[0], [-1])[:5])
-
-    if cluster_size is not None:
-      return (num_virtual_nodes, cluster_size, START_BATCH, START_EPOCH)
-    else:
-      return None
 
   def test_step(self, data):
     """The logic for one evaluation step.
