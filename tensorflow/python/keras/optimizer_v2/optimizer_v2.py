@@ -496,24 +496,17 @@ class OptimizerV2(trackable.Trackable):
             "`experimental_aggregate_gradients=False is not supported for "
             "ParameterServerStrategy and CentralStorageStrategy")
 
-      from virtual.elasticity_callback import ELASTICITY_VERBOSE
-      import tensorflow as tf
-      print_ops = []
       apply_state = self._prepare(var_list)
       if experimental_aggregate_gradients:
         reduced_grads = self._aggregate_gradients(grads_and_vars)
-        if ELASTICITY_VERBOSE:
-          print_ops = [tf.print("The first allreduced gradient is",\
-            tf.reshape(reduced_grads[0], [-1])[:5])]
         var_list = [v for _, v in grads_and_vars]
         grads_and_vars = list(zip(reduced_grads, var_list))
-      with tf.control_dependencies(print_ops):
-        return distribute_ctx.get_replica_context().merge_call(
-          functools.partial(self._distributed_apply, apply_state=apply_state),
-          args=(grads_and_vars,),
-          kwargs={
-              "name": name,
-          })
+      return distribute_ctx.get_replica_context().merge_call(
+        functools.partial(self._distributed_apply, apply_state=apply_state),
+        args=(grads_and_vars,),
+        kwargs={
+            "name": name,
+        })
 
   def _aggregate_gradients(self, grads_and_vars):
     """Returns all-reduced gradients.
