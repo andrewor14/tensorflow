@@ -1117,6 +1117,7 @@ class DataHandler(object):
       dataset = dataset.map(_make_class_weight_map_fn(class_weight))
     self._inferred_steps = self._infer_steps(steps_per_epoch, dataset)
     self._dataset = strategy.experimental_distribute_dataset(dataset)
+    self._resized = False
 
   def enumerate_epochs(self):
     """Yields `(epoch, tf.data.Iterator)`."""
@@ -1125,8 +1126,9 @@ class DataHandler(object):
     while self._current_epoch < self._epochs:
       if self._insufficient_data:  # Set by `catch_stop_iteration`.
         break
-      if self._adapter.should_recreate_iterator():
+      if self._adapter.should_recreate_iterator() or self._resized:
         data_iterator = iter(self._dataset)
+        self._resized = False
       yield self._current_epoch, data_iterator
       self._adapter.on_epoch_end()
       self._current_epoch += 1

@@ -710,7 +710,8 @@ class Model(network.Network, version_utils.ModelVersionSelector):
           validation_freq=1,
           max_queue_size=10,
           workers=1,
-          use_multiprocessing=False):
+          use_multiprocessing=False,
+          dynamic_input_fn=None):
     """Trains the model for a fixed number of epochs (iterations on a dataset).
 
     Arguments:
@@ -940,6 +941,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
 
       from virtual.elasticity_callback import ENABLE_ELASTICITY
       from virtual.virtual_helper import NUM_VIRTUAL_NODES_PER_DEVICE
+      resized = False
       num_virtual_nodes = int(os.getenv(NUM_VIRTUAL_NODES_PER_DEVICE) or 1)
       # Handle fault-tolerance for multi-worker.
       # TODO(omalleyt): Fix the ordering issues that mean this has to
@@ -979,6 +981,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
                     data_handler._current_epoch = START_EPOCH
                   # Hack: use the right number of virtual nodes for eval
                   os.environ[NUM_VIRTUAL_NODES_PER_DEVICE] = str(NUM_VIRTUAL_NODES)
+                  resized = True
 
               tmp_logs = train_function(iterator, num_virtual_nodes)
               # Catch OutOfRangeError for Datasets of unknown size.
@@ -1011,6 +1014,16 @@ class Model(network.Network, version_utils.ModelVersionSelector):
         callbacks.on_epoch_end(epoch, epoch_logs)
         if self.stop_training:
           break
+
+        # Reshard the data if we resized in this epoch
+        if resized and dynamic_input_fn is not None:
+          from virtual import virtual_helper
+          input_context = virtual_helper.get_input_context()
+          dataset = dynamic_input_fn(input_context)
+          dataset = self.distribute_strategy.experimental_distribute_dataset(dataset)
+          data_handler._dataset = dataset
+          data_handler._resized = True
+          resized = False
 
       callbacks.on_train_end()
       return self.history
