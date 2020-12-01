@@ -623,7 +623,13 @@ class OptimizerV2(trackable.Trackable):
             "ParameterServerStrategy and CentralStorageStrategy")
 
       apply_state = self._prepare(var_list)
-      if experimental_aggregate_gradients:
+      from virtual.elasticity_callback import ENABLE_ELASTICITY
+      if ENABLE_ELASTICITY:
+        from virtual.virtual_helper import HOROVOD_ALLREDUCE_FUNCTION
+        gradients = [g for (g, _) in grads_and_vars]
+        gradients = HOROVOD_ALLREDUCE_FUNCTION(gradients)
+        grads_and_vars = zip(gradients, var_list)
+      elif experimental_aggregate_gradients:
         grads_and_vars = self._transform_unaggregated_gradients(grads_and_vars)
         grads_and_vars = self._aggregate_gradients(grads_and_vars)
       grads_and_vars = self._transform_gradients(grads_and_vars)

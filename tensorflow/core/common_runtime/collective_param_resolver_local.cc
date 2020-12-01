@@ -92,10 +92,13 @@ void CollectiveParamResolverLocal::CompleteGroupLocal(
   std::vector<StatusCallback> to_be_called;
   GroupRec* gr = nullptr;
   Status status;
+  bool should_clear_instance_table = false;
   {
     mutex_lock l(group_mu_);
     auto it = group_table_.find(cp->group.group_key);
     if (it == group_table_.end()) {
+      // Avoid collisions across groups
+      should_clear_instance_table = true;
       gr = new GroupRec;
       mutex_lock grl(gr->mu);
       gr->group.group_key = cp->group.group_key;
@@ -133,6 +136,12 @@ void CollectiveParamResolverLocal::CompleteGroupLocal(
               << " runtime_details=" << gr->group.runtime_details.ToString();
     } else {
       gr = it->second.get();
+    }
+  }
+  if (should_clear_instance_table) {
+    {
+      mutex_lock l(instance_mu_);
+      instance_table_.clear();
     }
   }
   {

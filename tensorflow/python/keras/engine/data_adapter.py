@@ -1120,6 +1120,7 @@ class DataHandler(object):
     if not _is_distributed_dataset(dataset):
       dataset = strategy.experimental_distribute_dataset(dataset)
     self._dataset = dataset
+    self._resized = False
 
     self._current_step = 0
     self._step_increment = self._steps_per_execution_value - 1
@@ -1131,13 +1132,16 @@ class DataHandler(object):
     """Yields `(epoch, tf.data.Iterator)`."""
     with self._truncate_execution_to_epoch():
       data_iterator = iter(self._dataset)
-      for epoch in range(self._initial_epoch, self._epochs):
+      self._current_epoch = self._initial_epoch
+      while self._current_epoch < self._epochs:
         if self._insufficient_data:  # Set by `catch_stop_iteration`.
           break
-        if self._adapter.should_recreate_iterator():
+        if self._adapter.should_recreate_iterator() or self._resized:
           data_iterator = iter(self._dataset)
-        yield epoch, data_iterator
+          self._resized = False
+        yield self._current_epoch, data_iterator
         self._adapter.on_epoch_end()
+        self._current_epoch += 1
 
   @contextlib.contextmanager
   def _truncate_execution_to_epoch(self):

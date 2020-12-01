@@ -13,6 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <stdlib.h>
+
 #include "tensorflow/core/framework/log_memory.h"
 
 #include "tensorflow/core/framework/log_memory.pb.h"
@@ -21,7 +23,15 @@ namespace tensorflow {
 
 const string LogMemory::kLogMemoryLabel = "__LOG_MEMORY__";
 
-bool LogMemory::IsEnabled() { return VLOG_IS_ON(2); }
+bool LogMemory::IsEnabled() {
+  const char* enabled_raw = getenv("LOG_MEMORY_ENABLED");
+  if (enabled_raw == NULL) {
+    return VLOG_IS_ON(2);
+  }
+  std::string s(enabled_raw);
+  std::transform(s.begin(), s.end(), s.begin(), [&] (char c) { return std::tolower(c); });
+  return s == "true" || s == "1";
+}
 
 namespace {
 

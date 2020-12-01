@@ -26,12 +26,14 @@ import warnings
 
 import six
 
+import tensorflow as tf
 from tensorflow.python.autograph.lang import directives
 from tensorflow.python.data.experimental.ops.distribute_options import AutoShardPolicy
 from tensorflow.python.data.ops import dataset_ops
 from tensorflow.python.distribute import collective_all_reduce_strategy
 from tensorflow.python.distribute import distribution_strategy_context as ds_context
 from tensorflow.python.distribute import values as ds_values
+from tensorflow.python.distribute.input_lib import DistributedIterator
 from tensorflow.python.eager import backprop
 from tensorflow.python.eager import context
 from tensorflow.python.eager import def_function
@@ -743,7 +745,6 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
       `tf.keras.callbacks.CallbackList.on_train_batch_end`. Typically, the
       values of the `Model`'s metrics are returned. Example:
       `{'loss': 0.2, 'accuracy': 0.7}`.
-
     """
     # These are the only transformations `Model.fit` applies to user-input
     # data when a `tf.data.Dataset` is provided.
@@ -756,6 +757,94 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
           y, y_pred, sample_weight, regularization_losses=self.losses)
     self.optimizer.minimize(loss, self.trainable_variables, tape=tape)
     self.compiled_metrics.update_state(y, y_pred, sample_weight)
+    return {m.name: m.result() for m in self.metrics}
+
+  def virtual_train_step(self, iterator, num_virtual_nodes):
+    """The logic for one training step.
+
+    This method can be overridden to support custom training logic.
+    This method is called by `Model.make_train_function`.
+
+    This method should contain the mathemetical logic for one step of training.
+    This typically includes the forward pass, loss calculation, backpropagation,
+    and metric updates.
+
+    Configuration details for *how* this logic is run (e.g. `tf.function` and
+    `tf.distribute.Strategy` settings), should be left to
+    `Model.make_train_function`, which can also be overridden.
+
+    Arguments:
+      iterator: An iterator of nested structures of `Tensor`s.
+      num_virtual_nodes: Number of virtual nodes to run in this step.
+
+    Returns:
+      A `dict` containing values that will be passed to
+      `tf.keras.callbacks.CallbackList.on_train_batch_end`. Typically, the
+      values of the `Model`'s metrics are returned. Example:
+      `{'loss': 0.2, 'accuracy': 0.7}`.
+
+    """
+    def while_cond(i, aggregated_gradients):
+      return i < num_virtual_nodes
+    def while_body(i, aggregated_gradients):
+      # Ensure we have finished running the previous virtual node before proceeding
+      with tf.control_dependencies(aggregated_gradients):
+        print_op = tf.print("Training on virtual node", i+1, "/", num_virtual_nodes)
+      with tf.control_dependencies([print_op]):
+        # These are the only transformations `Model.fit` applies to user-input
+        # data when a `tf.data.Dataset` is provided. These utilities will be exposed
+        # publicly.
+        data = next(iterator)
+        data = data_adapter.expand_1d(data)
+        x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
+
+        with backprop.GradientTape() as tape:
+          y_pred = self(x, training=True)
+          loss = self.compiled_loss(
+              y, y_pred, sample_weight, regularization_losses=self.losses)
+          grads_and_vars = self.optimizer._compute_gradients(
+              loss, self.trainable_variables, tape)
+          gradients = [g for (g, _) in grads_and_vars]
+
+        # Convert all IndexedSlices to dense tensors
+        # TODO: find a more efficient way to handle this
+        for j, grad in enumerate(gradients):
+          if isinstance(grad, tf.IndexedSlices):
+            gradients[j] = tf.convert_to_tensor(grad)
+
+        # Aggregate gradients across virtual nodes
+        # We sum them here and divide them later
+        if len(aggregated_gradients) != len(gradients):
+          raise ValueError("Wrong number of gradients %s, expected %s" %\
+            (len(gradients), len(aggregated_gradients)))
+        for j in range(len(gradients)):
+          aggregated_gradients[j] += gradients[j]
+
+        self.compiled_metrics.update_state(y, y_pred, sample_weight)
+      return (i+1, aggregated_gradients)
+
+    # We use tf.while_loop here instead of autograph because of this issue:
+    # https://github.com/tensorflow/tensorflow/issues/33308
+    # For the initial arguments, we create a set of tensors with the same shape as the
+    # trainable variables, assuming that these shapes match the shapes of the gradients.
+    # This is a requirement of tf.while_loop, that the initial arguments must have the
+    # same shapes as the return values of the body function.
+    _, aggregated_gradients = tf.while_loop(
+      while_cond,
+      while_body,
+      (0, [tf.zeros(shape=v.shape, dtype=v.dtype) for v in self.trainable_variables]))
+
+    # Apply aggregated gradients
+    print_ops = []
+    for j in range(len(aggregated_gradients)):
+      aggregated_gradients[j] /= num_virtual_nodes
+      from virtual.elasticity_callback import ELASTICITY_VERBOSE
+      if ELASTICITY_VERBOSE and j == 0:
+        print_ops = [tf.print("The first gradient is", tf.reshape(aggregated_gradients[j], [-1])[:5])]
+
+    with tf.control_dependencies(print_ops):
+      self.optimizer.apply_gradients(zip(aggregated_gradients, self.trainable_variables))
+
     return {m.name: m.result() for m in self.metrics}
 
   def make_train_function(self):
@@ -781,18 +870,27 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
     if self.train_function is not None:
       return self.train_function
 
-    def step_function(model, iterator):
+    disable_virtual_nodes = os.getenv("DISABLE_VIRTUAL_NODES", "").lower() == "true"
+
+    def step_function(model, iterator, num_virtual_nodes):
       """Runs a single training step."""
 
-      def run_step(data):
-        outputs = model.train_step(data)
+      def run_step(iterator):
+        if disable_virtual_nodes:
+            from absl import logging
+            if num_virtual_nodes > 1:
+                raise ValueError("NUM_VIRTUAL_NODES_PER_DEVICE is set but virtual nodes is disabled")
+            logging.info("Running non-virtual train step")
+            outputs = model.train_step(next(iterator))
+        else:
+            iterator = _convert_distributed_iterator(iterator)
+            outputs = model.virtual_train_step(iterator, num_virtual_nodes)
         # Ensure counter is updated only if `train_step` succeeds.
         with ops.control_dependencies(_minimum_control_deps(outputs)):
           model._train_counter.assign_add(1)  # pylint: disable=protected-access
         return outputs
 
-      data = next(iterator)
-      outputs = model.distribute_strategy.run(run_step, args=(data,))
+      outputs = model.distribute_strategy.run(run_step, args=(iterator,))
       outputs = reduce_per_replica(
           outputs, self.distribute_strategy, reduction='first')
       write_scalar_summaries(outputs, step=model._train_counter)  # pylint: disable=protected-access
@@ -838,7 +936,8 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
           validation_freq=1,
           max_queue_size=10,
           workers=1,
-          use_multiprocessing=False):
+          use_multiprocessing=False,
+          dynamic_input_fn=None):
     """Trains the model for a fixed number of epochs (iterations on a dataset).
 
     Arguments:
@@ -1078,6 +1177,11 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
       self.train_function = self.make_train_function()
       self._train_counter.assign(0)
       callbacks.on_train_begin()
+
+      from virtual.elasticity_callback import ENABLE_ELASTICITY
+      from virtual.virtual_helper import NUM_VIRTUAL_NODES_PER_DEVICE
+      resized = False
+      num_virtual_nodes = int(os.getenv(NUM_VIRTUAL_NODES_PER_DEVICE) or 1)
       training_logs = None
       # Handle fault-tolerance for multi-worker.
       # TODO(omalleyt): Fix the ordering issues that mean this has to
@@ -1097,7 +1201,30 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
                 batch_size=batch_size,
                 _r=1):
               callbacks.on_train_batch_begin(step)
-              tmp_logs = self.train_function(iterator)
+
+              # Handle cluster configuration changes if elasticity is enabled
+              if ENABLE_ELASTICITY:
+                from absl import logging
+                from virtual.elasticity_callback import\
+                  NUM_VIRTUAL_NODES, START_BATCH, START_EPOCH
+                if NUM_VIRTUAL_NODES is not None:
+                  # Force retracing
+                  self.train_function = None
+                  self.make_train_function()
+                  num_virtual_nodes = NUM_VIRTUAL_NODES
+                  # Update step and epoch on the new workers
+                  if START_BATCH is not None and START_EPOCH is not None:
+                    logging.info("Updating batch to %s (was %s) and epoch to %s (was %s)" %\
+                      (START_BATCH, step, START_EPOCH, epoch))
+                    step = START_BATCH
+                    epoch = START_EPOCH
+                    data_handler._current_step = START_BATCH
+                    data_handler._current_epoch = START_EPOCH
+                  # Hack: use the right number of virtual nodes for eval
+                  os.environ[NUM_VIRTUAL_NODES_PER_DEVICE] = str(NUM_VIRTUAL_NODES)
+                  resized = True
+
+              tmp_logs = self.train_function(iterator, num_virtual_nodes)
               if data_handler.should_sync:
                 context.async_wait()
               logs = tmp_logs  # No error, now safe to assign to logs.
@@ -1147,6 +1274,16 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
         if self.stop_training:
           break
 
+        # Reshard the data if we resized in this epoch
+        if resized and dynamic_input_fn is not None:
+          from virtual import virtual_helper
+          input_context = virtual_helper.get_input_context()
+          dataset = dynamic_input_fn(input_context)
+          dataset = self.distribute_strategy.experimental_distribute_dataset(dataset)
+          data_handler._dataset = dataset
+          data_handler._resized = True
+          resized = False
+
       # If eval data_hanlder exists, delete it after all epochs are done.
       if getattr(self, '_eval_data_handler', None) is not None:
         del self._eval_data_handler
@@ -1162,6 +1299,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
 
     This function should contain the mathematical logic for one step of
     evaluation.
+
     This typically includes the forward pass, loss calculation, and metrics
     updates.
 
@@ -1188,6 +1326,51 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
     self.compiled_metrics.update_state(y, y_pred, sample_weight)
     return {m.name: m.result() for m in self.metrics}
 
+  def virtual_test_step(self, iterator, num_virtual_nodes):
+    """The logic for one evaluation step.
+
+    This method can be overridden to support custom evaluation logic.
+    This method is called by `Model.make_test_function`.
+
+    This function should contain the mathemetical logic for one step of
+    evaluation.
+    This typically includes the forward pass, loss calculation, and metrics
+    updates.
+
+    Configuration details for *how* this logic is run (e.g. `tf.function` and
+    `tf.distribute.Strategy` settings), should be left to
+    `Model.make_test_function`, which can also be overridden.
+
+    Arguments:
+      iterator: An iterator of nested structures of `Tensor`s.
+      num_virtual_nodes: Number of virtual nodes to run in this step.
+
+    Returns:
+      A `dict` containing values that will be passed to
+      `tf.keras.callbacks.CallbackList.on_train_batch_end`. Typically, the
+      values of the `Model`'s metrics are returned.
+    """
+    def while_cond(i, deps):
+      return i < num_virtual_nodes
+    def while_body(i, deps):
+      # Ensure we have finished running the previous virtual node before proceeding
+      with tf.control_dependencies(deps):
+        print_op = tf.print("Evaluating on virtual node ", i+1, "/", num_virtual_nodes)
+      with tf.control_dependencies([print_op]):
+        data = next(iterator)
+        data = data_adapter.expand_1d(data)
+        x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
+        y_pred = self(x, training=False)
+        self.compiled_metrics.update_state(y, y_pred, sample_weight)
+        # Updates stateful loss metrics.
+        total_loss = self.compiled_loss(
+            y, y_pred, sample_weight, regularization_losses=self.losses)
+      return (i+1, [total_loss])
+    # We use tf.while_loop here instead of autograph because of this issue:
+    # https://github.com/tensorflow/tensorflow/issues/33308
+    tf.while_loop(while_cond, while_body, (0, [0.0]))
+    return {m.name: m.result() for m in self.metrics}
+
   def make_test_function(self):
     """Creates a function that executes one step of evaluation.
 
@@ -1210,34 +1393,43 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
     if self.test_function is not None:
       return self.test_function
 
-    def step_function(model, iterator):
+    disable_virtual_nodes = os.getenv("DISABLE_VIRTUAL_NODES", "").lower() == "true"
+
+    def step_function(model, iterator, num_virtual_nodes):
       """Runs a single evaluation step."""
 
-      def run_step(data):
-        outputs = model.test_step(data)
+      def run_step(iterator):
+        if disable_virtual_nodes:
+          from absl import logging
+          if num_virtual_nodes > 1:
+              raise ValueError("NUM_VIRTUAL_NODES_PER_DEVICE is set but virtual nodes is disabled")
+          logging.info("Running non-virtual test step")
+          outputs = model.test_step(next(iterator))
+        else:
+          iterator = _convert_distributed_iterator(iterator)
+          outputs = model.virtual_test_step(iterator, num_virtual_nodes)
         # Ensure counter is updated only if `test_step` succeeds.
         with ops.control_dependencies(_minimum_control_deps(outputs)):
           model._test_counter.assign_add(1)  # pylint: disable=protected-access
         return outputs
 
-      data = next(iterator)
-      outputs = model.distribute_strategy.run(run_step, args=(data,))
+      outputs = model.distribute_strategy.run(run_step, args=(iterator,))
       outputs = reduce_per_replica(
           outputs, self.distribute_strategy, reduction='first')
       return outputs
 
     if self._steps_per_execution.numpy().item() == 1:
 
-      def test_function(iterator):
+      def test_function(iterator, num_virtual_nodes):
         """Runs an evaluation execution with one step."""
-        return step_function(self, iterator)
+        return step_function(self, iterator, num_virtual_nodes)
 
     else:
 
-      def test_function(iterator):
+      def test_function(iterator, num_virtual_nodes):
         """Runs an evaluation execution with multiple steps."""
         for _ in math_ops.range(self._steps_per_execution):
-          outputs = step_function(self, iterator)
+          outputs = step_function(self, iterator, num_virtual_nodes)
         return outputs
 
     if not self.run_eagerly:
@@ -1379,6 +1571,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
       logs = {}
       self.test_function = self.make_test_function()
       self._test_counter.assign(0)
+      num_virtual_nodes = int(os.getenv("NUM_VIRTUAL_NODES_PER_DEVICE") or 1)
       callbacks.on_test_begin()
       for _, iterator in data_handler.enumerate_epochs():  # Single epoch.
         self.reset_metrics()
@@ -1386,7 +1579,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
           for step in data_handler.steps():
             with trace.Trace('test', step_num=step, _r=1):
               callbacks.on_test_batch_begin(step)
-              tmp_logs = self.test_function(iterator)
+              tmp_logs = self.test_function(iterator, num_virtual_nodes)
               if data_handler.should_sync:
                 context.async_wait()
               logs = tmp_logs  # No error, now safe to assign to logs.
@@ -1451,6 +1644,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
       Function. The function created by this method should accept a
       `tf.data.Iterator`, and return the outputs of the `Model`.
     """
+    # TODO: make this work with virtual nodes
     if self.predict_function is not None:
       return self.predict_function
 
@@ -2797,7 +2991,6 @@ def _minimum_control_deps(outputs):
       return [out]  # Return first Tensor or Op from outputs.
   return []  # No viable Tensor or Op to use for control deps.
 
-
 def _disallow_inside_tf_function(method_name):
   if ops.inside_function():
     error_msg = (
@@ -2813,3 +3006,19 @@ def _disallow_inside_tf_function(method_name):
 def _is_hdf5_filepath(filepath):
   return (filepath.endswith('.h5') or filepath.endswith('.keras') or
           filepath.endswith('.hdf5'))
+
+
+def _convert_distributed_iterator(iterator):
+  """
+  Convert each `DistributedIterator` to a `PerReplica` value of individual iterators.
+  We do this to allow each device to independently fetch the next batch.
+  """
+  if not isinstance(iterator, DistributedIterator):
+    raise ValueError("Expected input iterator to be a DistributedIterator")
+  if len(iterator._iterators) != 1:
+    raise ValueError("Expected a single input iterator from CPU")
+  # DistributedIterator -> _SingleWorkerDatasetIterator -> MultiDeviceIterator -> iterator_ops.Iterator
+  per_replica_iterators = iterator._iterators[0]._iterator._device_iterators
+  per_replica_iterators = ds_values.regroup(per_replica_iterators)
+  return per_replica_iterators
+
