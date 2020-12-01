@@ -299,6 +299,7 @@ def _gen_flatbuffer_srcs_impl(ctx):
                 src.path,
             ],
             progress_message = "Generating flatbuffer files for {}:".format(src),
+            use_default_shell_env = True
         )
     return [
         DefaultInfo(files = depset(outputs)),
@@ -358,6 +359,7 @@ def _concat_flatbuffer_py_srcs_impl(ctx):
             ctx.attr.deps[0].files.to_list()[0].path,
             ctx.outputs.out.path,
         ),
+        use_default_shell_env = True
     )
 
 _concat_flatbuffer_py_srcs = rule(

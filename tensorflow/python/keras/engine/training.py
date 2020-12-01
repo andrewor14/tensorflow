@@ -19,12 +19,15 @@ from __future__ import division
 from __future__ import print_function
 
 import copy
+import os
 
+import tensorflow as tf
 from tensorflow.python.distribute import distribute_coordinator as dc
 from tensorflow.python.distribute import distribute_coordinator_context as dc_context
 from tensorflow.python.distribute import distribution_strategy_context as ds_context
 from tensorflow.python.distribute import parameter_server_strategy
 from tensorflow.python.distribute import values as ds_values
+from tensorflow.python.distribute.input_lib import DistributedIterator
 from tensorflow.python.eager import backprop
 from tensorflow.python.eager import context
 from tensorflow.python.eager import def_function
@@ -519,7 +522,6 @@ class Model(network.Network, version_utils.ModelVersionSelector):
       `tf.keras.callbacks.CallbackList.on_train_batch_end`. Typically, the
       values of the `Model`'s metrics are returned. Example:
       `{'loss': 0.2, 'accuracy': 0.7}`.
-
     """
     # These are the only transformations `Model.fit` applies to user-input
     # data when a `tf.data.Dataset` is provided. These utilities will be exposed
@@ -541,6 +543,103 @@ class Model(network.Network, version_utils.ModelVersionSelector):
               self.trainable_variables)
 
     self.compiled_metrics.update_state(y, y_pred, sample_weight)
+    return {m.name: m.result() for m in self.metrics}
+
+  def virtual_train_step(self, iterator, num_virtual_nodes):
+    """The logic for one training step.
+
+    This method can be overridden to support custom training logic.
+    This method is called by `Model.make_train_function`.
+
+    This method should contain the mathemetical logic for one step of training.
+    This typically includes the forward pass, loss calculation, backpropagation,
+    and metric updates.
+
+    Configuration details for *how* this logic is run (e.g. `tf.function` and
+    `tf.distribute.Strategy` settings), should be left to
+    `Model.make_train_function`, which can also be overridden.
+
+    Arguments:
+      iterator: An iterator of nested structures of `Tensor`s.
+      num_virtual_nodes: Number of virtual nodes to run in this step.
+
+    Returns:
+      A `dict` containing values that will be passed to
+      `tf.keras.callbacks.CallbackList.on_train_batch_end`. Typically, the
+      values of the `Model`'s metrics are returned. Example:
+      `{'loss': 0.2, 'accuracy': 0.7}`.
+
+    """
+    def while_cond(i, aggregated_gradients):
+      return i < num_virtual_nodes
+    def while_body(i, aggregated_gradients):
+      # Ensure we have finished running the previous virtual node before proceeding
+      with tf.control_dependencies(aggregated_gradients):
+        print_op = tf.print("Training on virtual node", i+1, "/", num_virtual_nodes)
+      with tf.control_dependencies([print_op]):
+        # These are the only transformations `Model.fit` applies to user-input
+        # data when a `tf.data.Dataset` is provided. These utilities will be exposed
+        # publicly.
+        data = next(iterator)
+        data = data_adapter.expand_1d(data)
+        x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
+
+        with backprop.GradientTape() as tape:
+          y_pred = self(x, training=True)
+          loss = self.compiled_loss(
+              y, y_pred, sample_weight, regularization_losses=self.losses)
+
+        # Compute gradients
+        with tape:
+          if isinstance(self.optimizer, lso.LossScaleOptimizer):
+            loss = self.optimizer.get_scaled_loss(loss)
+        gradients = tape.gradient(loss, self.trainable_variables)
+
+        # Convert all IndexedSlices to dense tensors
+        # TODO: find a more efficient way to handle this, e.g. processing them in place
+        for j, grad in enumerate(gradients):
+          if isinstance(grad, tf.IndexedSlices):
+            gradients[j] = tf.convert_to_tensor(grad)
+
+        # Aggregate gradients across virtual nodes
+        # We sum them here and divide them later
+        if len(aggregated_gradients) != len(gradients):
+          raise ValueError("Wrong number of gradients %s, expected %s" %\
+            (len(gradients), len(aggregated_gradients)))
+        for j in range(len(gradients)):
+          aggregated_gradients[j] += gradients[j]
+
+        self.compiled_metrics.update_state(y, y_pred, sample_weight)
+      return (i+1, aggregated_gradients)
+
+    # We use tf.while_loop here instead of autograph because of this issue:
+    # https://github.com/tensorflow/tensorflow/issues/33308
+    # For the initial arguments, we create a set of tensors with the same shape as the
+    # trainable variables, assuming that these shapes match the shapes of the gradients.
+    # This is a requirement of tf.while_loop, that the initial arguments must have the
+    # same shapes as the return values of the body function.
+    _, aggregated_gradients = tf.while_loop(
+      while_cond,
+      while_body,
+      (0, [tf.zeros(shape=v.shape, dtype=v.dtype) for v in self.trainable_variables]))
+
+    # For custom training steps, users can just write:
+    #   trainable_variables = self.trainable_variables
+    #   gradients = tape.gradient(loss, trainable_variables)
+    #   self.optimizer.apply_gradients(zip(gradients, trainable_variables))
+    # The _apply_gradients call does a few extra steps unnecessary in most cases,
+    # such as loss scaling and gradient clipping.
+    print_ops = []
+    for j in range(len(aggregated_gradients)):
+      aggregated_gradients[j] /= num_virtual_nodes
+      from virtual.elasticity_callback import ELASTICITY_VERBOSE
+      if ELASTICITY_VERBOSE and j == 0:
+        print_ops = [tf.print("The first gradient is", tf.reshape(aggregated_gradients[j], [-1])[:5])]
+
+    with tf.control_dependencies(print_ops):
+      _apply_gradients(self.distribute_strategy, self.optimizer,
+        aggregated_gradients, self.trainable_variables)
+
     return {m.name: m.result() for m in self.metrics}
 
   def make_train_function(self):
@@ -566,10 +665,20 @@ class Model(network.Network, version_utils.ModelVersionSelector):
     if self.train_function is not None:
       return self.train_function
 
-    def train_function(iterator):
-      data = next(iterator)
-      outputs = self.distribute_strategy.run(
-          self.train_step, args=(data,))
+    disable_virtual_nodes = os.getenv("DISABLE_VIRTUAL_NODES", "").lower() == "true"
+
+    def train_function(iterator, num_virtual_nodes):
+      if disable_virtual_nodes:
+          from absl import logging
+          if num_virtual_nodes > 1:
+              raise ValueError("NUM_VIRTUAL_NODES_PER_DEVICE is set but virtual nodes is disabled")
+          logging.info("Running non-virtual train step")
+          outputs = self.distribute_strategy.run(
+              self.train_step, args=(next(iterator),))
+      else:
+          iterator = _convert_distributed_iterator(iterator)
+          outputs = self.distribute_strategy.run(
+              self.virtual_train_step, args=(iterator, num_virtual_nodes))
       outputs = reduce_per_replica(
           outputs, self.distribute_strategy, reduction='first')
       return outputs
@@ -601,7 +710,8 @@ class Model(network.Network, version_utils.ModelVersionSelector):
           validation_freq=1,
           max_queue_size=10,
           workers=1,
-          use_multiprocessing=False):
+          use_multiprocessing=False,
+          dynamic_input_fn=None):
     """Trains the model for a fixed number of epochs (iterations on a dataset).
 
     Arguments:
@@ -828,6 +938,11 @@ class Model(network.Network, version_utils.ModelVersionSelector):
       self.stop_training = False
       train_function = self.make_train_function()
       callbacks.on_train_begin()
+
+      from virtual.elasticity_callback import ENABLE_ELASTICITY
+      from virtual.virtual_helper import NUM_VIRTUAL_NODES_PER_DEVICE
+      resized = False
+      num_virtual_nodes = int(os.getenv(NUM_VIRTUAL_NODES_PER_DEVICE) or 1)
       # Handle fault-tolerance for multi-worker.
       # TODO(omalleyt): Fix the ordering issues that mean this has to
       # happen after `callbacks.on_train_begin`.
@@ -845,7 +960,30 @@ class Model(network.Network, version_utils.ModelVersionSelector):
                 step_num=step,
                 batch_size=batch_size):
               callbacks.on_train_batch_begin(step)
-              tmp_logs = train_function(iterator)
+
+              # Handle cluster configuration changes if elasticity is enabled
+              if ENABLE_ELASTICITY:
+                from absl import logging
+                from virtual.elasticity_callback import\
+                  NUM_VIRTUAL_NODES, START_BATCH, START_EPOCH
+                if NUM_VIRTUAL_NODES is not None:
+                  # Force retracing
+                  self.train_function = None
+                  self.make_train_function()
+                  num_virtual_nodes = NUM_VIRTUAL_NODES
+                  # Update step and epoch on the new workers
+                  if START_BATCH is not None and START_EPOCH is not None:
+                    logging.info("Updating batch to %s (was %s) and epoch to %s (was %s)" %\
+                      (START_BATCH, step, START_EPOCH, epoch))
+                    step = START_BATCH
+                    epoch = START_EPOCH
+                    data_handler._current_step = START_BATCH
+                    data_handler._current_epoch = START_EPOCH
+                  # Hack: use the right number of virtual nodes for eval
+                  os.environ[NUM_VIRTUAL_NODES_PER_DEVICE] = str(NUM_VIRTUAL_NODES)
+                  resized = True
+
+              tmp_logs = train_function(iterator, num_virtual_nodes)
               # Catch OutOfRangeError for Datasets of unknown size.
               # This blocks until the batch has finished executing.
               # TODO(b/150292341): Allow multiple async steps here.
@@ -877,6 +1015,16 @@ class Model(network.Network, version_utils.ModelVersionSelector):
         if self.stop_training:
           break
 
+        # Reshard the data if we resized in this epoch
+        if resized and dynamic_input_fn is not None:
+          from virtual import virtual_helper
+          input_context = virtual_helper.get_input_context()
+          dataset = dynamic_input_fn(input_context)
+          dataset = self.distribute_strategy.experimental_distribute_dataset(dataset)
+          data_handler._dataset = dataset
+          data_handler._resized = True
+          resized = False
+
       callbacks.on_train_end()
       return self.history
 
@@ -888,6 +1036,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
 
     This function should contain the mathemetical logic for one step of
     evaluation.
+
     This typically includes the forward pass, loss calculation, and metrics
     updates.
 
@@ -914,6 +1063,51 @@ class Model(network.Network, version_utils.ModelVersionSelector):
     self.compiled_metrics.update_state(y, y_pred, sample_weight)
     return {m.name: m.result() for m in self.metrics}
 
+  def virtual_test_step(self, iterator, num_virtual_nodes):
+    """The logic for one evaluation step.
+
+    This method can be overridden to support custom evaluation logic.
+    This method is called by `Model.make_test_function`.
+
+    This function should contain the mathemetical logic for one step of
+    evaluation.
+    This typically includes the forward pass, loss calculation, and metrics
+    updates.
+
+    Configuration details for *how* this logic is run (e.g. `tf.function` and
+    `tf.distribute.Strategy` settings), should be left to
+    `Model.make_test_function`, which can also be overridden.
+
+    Arguments:
+      iterator: An iterator of nested structures of `Tensor`s.
+      num_virtual_nodes: Number of virtual nodes to run in this step.
+
+    Returns:
+      A `dict` containing values that will be passed to
+      `tf.keras.callbacks.CallbackList.on_train_batch_end`. Typically, the
+      values of the `Model`'s metrics are returned.
+    """
+    def while_cond(i, deps):
+      return i < num_virtual_nodes
+    def while_body(i, deps):
+      # Ensure we have finished running the previous virtual node before proceeding
+      with tf.control_dependencies(deps):
+        print_op = tf.print("Evaluating on virtual node ", i+1, "/", num_virtual_nodes)
+      with tf.control_dependencies([print_op]):
+        data = next(iterator)
+        data = data_adapter.expand_1d(data)
+        x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
+        y_pred = self(x, training=False)
+        self.compiled_metrics.update_state(y, y_pred, sample_weight)
+        # Updates stateful loss metrics.
+        total_loss = self.compiled_loss(
+            y, y_pred, sample_weight, regularization_losses=self.losses)
+      return (i+1, [total_loss])
+    # We use tf.while_loop here instead of autograph because of this issue:
+    # https://github.com/tensorflow/tensorflow/issues/33308
+    tf.while_loop(while_cond, while_body, (0, [0.0]))
+    return {m.name: m.result() for m in self.metrics}
+
   def make_test_function(self):
     """Creates a function that executes one step of evaluation.
 
@@ -936,10 +1130,20 @@ class Model(network.Network, version_utils.ModelVersionSelector):
     if self.test_function is not None:
       return self.test_function
 
-    def test_function(iterator):
-      data = next(iterator)
-      outputs = self.distribute_strategy.run(
-          self.test_step, args=(data,))
+    disable_virtual_nodes = os.getenv("DISABLE_VIRTUAL_NODES", "").lower() == "true"
+
+    def test_function(iterator, num_virtual_nodes):
+      if disable_virtual_nodes:
+          from absl import logging
+          if num_virtual_nodes > 1:
+              raise ValueError("NUM_VIRTUAL_NODES_PER_DEVICE is set but virtual nodes is disabled")
+          logging.info("Running non-virtual test step")
+          outputs = self.distribute_strategy.run(
+              self.test_step, args=(next(iterator),))
+      else:
+          iterator = _convert_distributed_iterator(iterator)
+          outputs = self.distribute_strategy.run(
+              self.virtual_test_step, args=(iterator, num_virtual_nodes))
       outputs = reduce_per_replica(
           outputs, self.distribute_strategy, reduction='first')
       return outputs
@@ -1067,6 +1271,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
             epochs=1,
             steps=data_handler.inferred_steps)
 
+      num_virtual_nodes = int(os.getenv("NUM_VIRTUAL_NODES_PER_DEVICE") or 1)
       test_function = self.make_test_function()
       callbacks.on_test_begin()
       for _, iterator in data_handler.enumerate_epochs():  # Single epoch.
@@ -1078,7 +1283,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
                 graph_type='test',
                 step_num=step):
               callbacks.on_test_batch_begin(step)
-              tmp_logs = test_function(iterator)
+              tmp_logs = test_function(iterator, num_virtual_nodes)
               # Catch OutOfRangeError for Datasets of unknown size.
               # This blocks until the batch has finished executing.
               # TODO(b/150292341): Allow multiple async steps here.
@@ -1139,6 +1344,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
       Function. The function created by this method should accept a
       `tf.data.Iterator`, and return the outputs of the `Model`.
     """
+    # TODO: make this work with virtual nodes
     if self.predict_function is not None:
       return self.predict_function
 
@@ -1787,21 +1993,49 @@ def _minimize(strategy, tape, optimizer, loss, trainable_variables):
       loss = optimizer.get_scaled_loss(loss)
 
   gradients = tape.gradient(loss, trainable_variables)
+  _apply_gradients(strategy, optimizer, gradients, trainable_variables)
 
+
+def _apply_gradients(strategy, optimizer, gradients, trainable_variables):
+  """Apply the given gradients by updating `trainable_variables`.
+
+  This is roughly equivalent to
+
+  ```python
+  self.optimizer.apply_gradients(zip(gradients, trainable_variables))
+  ```
+
+  However, this function also applies gradient clipping and loss scaling if the
+  optimizer is a LossScaleOptimizer.
+
+  Args:
+    strategy: `tf.distribute.Strategy`.
+    optimizer: The optimizer used to minimize the loss.
+    gradients: The gradients to use when applying to the variables.
+    trainable_variables: The variables that will be updated in order to minimize
+      the loss.
+  """
+  from virtual.elasticity_callback import ENABLE_ELASTICITY
   # Whether to aggregate gradients outside of optimizer. This requires support
   # of the optimizer and doesn't work with ParameterServerStrategy and
   # CentralStroageStrategy.
   aggregate_grads_outside_optimizer = (
+      ENABLE_ELASTICITY or
       optimizer._HAS_AGGREGATE_GRAD and  # pylint: disable=protected-access
       not isinstance(strategy.extended,
                      parameter_server_strategy.ParameterServerStrategyExtended))
 
   if aggregate_grads_outside_optimizer:
-    # We aggregate gradients before unscaling them, in case a subclass of
-    # LossScaleOptimizer all-reduces in fp16. All-reducing in fp16 can only be
-    # done on scaled gradients, not unscaled gradients, for numeric stability.
-    gradients = optimizer._aggregate_gradients(zip(gradients,  # pylint: disable=protected-access
-                                                   trainable_variables))
+    if ENABLE_ELASTICITY:
+      from virtual.virtual_helper import HOROVOD_ALLREDUCE_FUNCTION
+      gradients = HOROVOD_ALLREDUCE_FUNCTION(gradients)
+    else:
+      # We aggregate gradients before unscaling them, in case a subclass of
+      # LossScaleOptimizer all-reduces in fp16. All-reducing in fp16 can only be
+      # done on scaled gradients, not unscaled gradients, for numeric stability.
+      gradients = optimizer._aggregate_gradients(zip(gradients,  # pylint: disable=protected-access
+                                                     trainable_variables))
+
   if isinstance(optimizer, lso.LossScaleOptimizer):
     gradients = optimizer.get_unscaled_gradients(gradients)
   gradients = optimizer._clip_gradients(gradients)  # pylint: disable=protected-access
@@ -1812,3 +2046,19 @@ def _minimize(strategy, tape, optimizer, loss, trainable_variables):
           experimental_aggregate_gradients=False)
     else:
       optimizer.apply_gradients(zip(gradients, trainable_variables))
+
+
+def _convert_distributed_iterator(iterator):
+  """
+  Convert each `DistributedIterator` to a `PerReplica` value of individual iterators.
+  We do this to allow each device to independently fetch the next batch.
+  """
+  if not isinstance(iterator, DistributedIterator):
+    raise ValueError("Expected input iterator to be a DistributedIterator")
+  if len(iterator._iterators) != 1:
+    raise ValueError("Expected a single input iterator from CPU")
+  # DistributedIterator -> _SingleWorkerDatasetIterator -> MultiDeviceIterator -> iterator_ops.Iterator
+  per_replica_iterators = iterator._iterators[0]._iterator._device_iterators
+  per_replica_iterators = ds_values.regroup(per_replica_iterators)
+  return per_replica_iterators
+

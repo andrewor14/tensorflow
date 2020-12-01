@@ -502,11 +502,11 @@ class OptimizerV2(trackable.Trackable):
         var_list = [v for _, v in grads_and_vars]
         grads_and_vars = list(zip(reduced_grads, var_list))
       return distribute_ctx.get_replica_context().merge_call(
-          functools.partial(self._distributed_apply, apply_state=apply_state),
-          args=(grads_and_vars,),
-          kwargs={
-              "name": name,
-          })
+        functools.partial(self._distributed_apply, apply_state=apply_state),
+        args=(grads_and_vars,),
+        kwargs={
+            "name": name,
+        })
 
   def _aggregate_gradients(self, grads_and_vars):
     """Returns all-reduced gradients.
