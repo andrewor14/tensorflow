@@ -63,7 +63,8 @@ elif [[ "$ENVIRONMENT" == "snsgpu" ]]; then
   export PYTHON_BIN_PATH="/usr/bin/python3"
   export PYTHON_LIB_PATH="/usr/lib/python3/dist-packages"
   export TF_NEED_CUDA=1
-  export TF_CUDA_VERSION="10.0"
+  export TF_CUDA_VERSION="10.1"
+  export TF_CUBLAS_VERSION="10.1"
   export TF_CUDNN_VERSION="7.6.2"
   export TF_NCCL_VERSION="2.4.7"
   export TF_CUDA_PATHS="/usr/local/cuda,/usr/local/cudnn,/usr/local/nccl"

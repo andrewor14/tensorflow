@@ -232,7 +232,7 @@ void* BFCAllocator::AllocateRaw(size_t unused_alignment, size_t num_bytes,
                                 const AllocationAttributes& allocation_attr) {
   VLOG(1) << "AllocateRaw " << Name() << "  " << num_bytes;
   void* result;
-  if (allocation_attr.no_retry_on_failure) {
+  if (!allocation_attr.retry_on_failure) {
     // Return immediately upon the first failure if this is for allocating an
     // optional scratch space.
     bool dump_log_on_failure = VLOG_IS_ON(2);
