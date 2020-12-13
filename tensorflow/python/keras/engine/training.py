@@ -31,6 +31,7 @@ from tensorflow.python.autograph.lang import directives
 from tensorflow.python.data.experimental.ops.distribute_options import AutoShardPolicy
 from tensorflow.python.data.ops import dataset_ops
 from tensorflow.python.distribute import collective_all_reduce_strategy
+from tensorflow.python.distribute import distribute_utils
 from tensorflow.python.distribute import distribution_strategy_context as ds_context
 from tensorflow.python.distribute import values as ds_values
 from tensorflow.python.distribute.input_lib import DistributedIterator
@@ -802,9 +803,9 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
           y_pred = self(x, training=True)
           loss = self.compiled_loss(
               y, y_pred, sample_weight, regularization_losses=self.losses)
-          grads_and_vars = self.optimizer._compute_gradients(
-              loss, self.trainable_variables, tape)
-          gradients = [g for (g, _) in grads_and_vars]
+        grads_and_vars = self.optimizer._compute_gradients(
+            loss, self.trainable_variables, tape=tape)
+        gradients = [g for (g, _) in grads_and_vars]
 
         # Convert all IndexedSlices to dense tensors
         # TODO: find a more efficient way to handle this
@@ -875,22 +876,22 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
     def step_function(model, iterator, num_virtual_nodes):
       """Runs a single training step."""
 
-      def run_step(iterator):
+      def run_step(data_or_iterator):
         if disable_virtual_nodes:
             from absl import logging
             if num_virtual_nodes > 1:
                 raise ValueError("NUM_VIRTUAL_NODES_PER_DEVICE is set but virtual nodes is disabled")
             logging.info("Running non-virtual train step")
-            outputs = model.train_step(next(iterator))
+            outputs = model.train_step(data_or_iterator)
         else:
-            iterator = _convert_distributed_iterator(iterator)
-            outputs = model.virtual_train_step(iterator, num_virtual_nodes)
+            outputs = model.virtual_train_step(data_or_iterator, num_virtual_nodes)
         # Ensure counter is updated only if `train_step` succeeds.
         with ops.control_dependencies(_minimum_control_deps(outputs)):
           model._train_counter.assign_add(1)  # pylint: disable=protected-access
         return outputs
 
-      outputs = model.distribute_strategy.run(run_step, args=(iterator,))
+      args = next(iterator) if disable_virtual_nodes else _convert_distributed_iterator(iterator)
+      outputs = model.distribute_strategy.run(run_step, args=(args,))
       outputs = reduce_per_replica(
           outputs, self.distribute_strategy, reduction='first')
       write_scalar_summaries(outputs, step=model._train_counter)  # pylint: disable=protected-access
@@ -898,16 +899,16 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
 
     if self._steps_per_execution.numpy().item() == 1:
 
-      def train_function(iterator):
+      def train_function(iterator, num_virtual_nodes):
         """Runs a training execution with one step."""
-        return step_function(self, iterator)
+        return step_function(self, iterator, num_virtual_nodes)
 
     else:
 
-      def train_function(iterator):
+      def train_function(iterator, num_virtual_nodes):
         """Runs a training execution with multiple steps."""
         for _ in math_ops.range(self._steps_per_execution):
-          outputs = step_function(self, iterator)
+          outputs = step_function(self, iterator, num_virtual_nodes)
         return outputs
 
     if not self.run_eagerly:
@@ -1398,22 +1399,22 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
     def step_function(model, iterator, num_virtual_nodes):
       """Runs a single evaluation step."""
 
-      def run_step(iterator):
+      def run_step(data_or_iterator):
         if disable_virtual_nodes:
           from absl import logging
           if num_virtual_nodes > 1:
               raise ValueError("NUM_VIRTUAL_NODES_PER_DEVICE is set but virtual nodes is disabled")
           logging.info("Running non-virtual test step")
-          outputs = model.test_step(next(iterator))
+          outputs = model.test_step(data_or_iterator)
         else:
-          iterator = _convert_distributed_iterator(iterator)
-          outputs = model.virtual_test_step(iterator, num_virtual_nodes)
+          outputs = model.virtual_test_step(data_or_iterator, num_virtual_nodes)
         # Ensure counter is updated only if `test_step` succeeds.
         with ops.control_dependencies(_minimum_control_deps(outputs)):
           model._test_counter.assign_add(1)  # pylint: disable=protected-access
         return outputs
 
-      outputs = model.distribute_strategy.run(run_step, args=(iterator,))
+      args = next(iterator) if disable_virtual_nodes else _convert_distributed_iterator(iterator)
+      outputs = model.distribute_strategy.run(run_step, args=(args,))
       outputs = reduce_per_replica(
           outputs, self.distribute_strategy, reduction='first')
       return outputs
@@ -3019,6 +3020,6 @@ def _convert_distributed_iterator(iterator):
     raise ValueError("Expected a single input iterator from CPU")
   # DistributedIterator -> _SingleWorkerDatasetIterator -> MultiDeviceIterator -> iterator_ops.Iterator
   per_replica_iterators = iterator._iterators[0]._iterator._device_iterators
-  per_replica_iterators = ds_values.regroup(per_replica_iterators)
+  per_replica_iterators = distribute_utils.regroup(per_replica_iterators)
   return per_replica_iterators
 
