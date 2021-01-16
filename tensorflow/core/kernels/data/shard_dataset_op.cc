@@ -12,12 +12,17 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+
+#include <sstream>
+#include <stdlib.h>
+
 #include "tensorflow/core/kernels/data/shard_dataset_op.h"
 
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/kernels/data/name_utils.h"
 #include "tensorflow/core/lib/core/errors.h"
+#include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/stringprintf.h"
 #include "tensorflow/core/util/batch_util.h"
 
@@ -117,9 +122,30 @@ class ShardDatasetOp::Dataset : public DatasetBase {
   class Iterator : public DatasetIterator<Dataset> {
    public:
     explicit Iterator(const Params& params)
-        : DatasetIterator<Dataset>(params), next_index_(0) {}
+        : DatasetIterator<Dataset>(params), next_index_(0) {
+      const char* verbose = getenv("SHARD_DATASET_VERBOSE");
+      const char* enable_heterogeneous = getenv("ENABLE_HETEROGENEOUS");
+      if (verbose != NULL) {
+        std::string s(verbose);
+        std::transform(s.begin(), s.end(), s.begin(), [&] (char c) { return std::tolower(c); });
+        if (s == "true" || s == "1") {
+          verbose_ = true;
+        }
+      }
+      if (enable_heterogeneous != NULL) {
+        std::string s(enable_heterogeneous);
+        std::transform(s.begin(), s.end(), s.begin(), [&] (char c) { return std::tolower(c); });
+        if (s == "true" || s == "1") {
+          enable_heterogeneous_ = true;
+        }
+      }
+    }
 
     Status Initialize(IteratorContext* ctx) override {
+      // Initialize heterogeneous training here because we can't do it in the constructor
+      if (enable_heterogeneous_) {
+        TF_RETURN_IF_ERROR(InitializeHeterogeneous());
+      }
       return dataset()->input_->MakeIterator(ctx, this, prefix(), &input_impl_);
     }
 
@@ -134,11 +160,35 @@ class ShardDatasetOp::Dataset : public DatasetBase {
         return Status::OK();
       }
 
-      int num_to_skip =
-          (dataset()->index_ - next_index_) % dataset()->num_shards_;
-      if (num_to_skip < 0) {
-        num_to_skip += dataset()->num_shards_;
+      int num_to_skip = 0;
+
+      if (enable_heterogeneous_) {
+        // In heterogeneous training, each worker is assigned a specific range of the
+        // data in each batch. E.g. suppose the global batch size is 17 and each batch
+        // is split unevenly among three workers according to this ratio 12:3:2. The
+        // range for the second worker will be [12,15), which means we will skip over
+        // all data outside this range.
+        int i = next_index_ % global_batch_size_;
+        if (i == 0) {
+          num_to_skip = heterogeneous_range_start_;
+        } else if (heterogeneous_range_start_ <= i && i < heterogeneous_range_end_) {
+          num_to_skip = 0;
+        } else if (i == heterogeneous_range_end_) {
+          num_to_skip = global_batch_size_ -\
+            (heterogeneous_range_end_ - heterogeneous_range_start_);
+        } else {
+          std::stringstream s;
+          s << "Unexpected next_index_ " << next_index_;
+          return Status(errors::Internal(s.str()));
+        }
+      } else {
+        // Otherwise, shard evenly across input pipelines
+        num_to_skip = (dataset()->index_ - next_index_) % dataset()->num_shards_;
+        if (num_to_skip < 0) {
+          num_to_skip += dataset()->num_shards_;
+        }
       }
+
       int num_skipped;
       TF_RETURN_IF_ERROR(
           input_impl_->Skip(ctx, num_to_skip, end_of_sequence, &num_skipped));
@@ -146,6 +196,12 @@ class ShardDatasetOp::Dataset : public DatasetBase {
       if (*end_of_sequence) {
         input_impl_.reset();
         return Status::OK();
+      }
+
+      if (verbose_) {
+        VLOG(0) << "GetNextInternal: num_to_skip = " << num_to_skip <<\
+          ", num_skipped = " << num_skipped <<\
+          ", next_index = " << next_index_;
       }
 
       std::vector<Tensor> result;
@@ -224,6 +280,35 @@ class ShardDatasetOp::Dataset : public DatasetBase {
     }
 
    private:
+
+    // Initialize variables for heterogeneous training
+    Status InitializeHeterogeneous() {
+      const char* heterogeneous_range_start = getenv("HETEROGENEOUS_RANGE_START");
+      const char* heterogeneous_range_end = getenv("HETEROGENEOUS_RANGE_END");
+      const char* global_batch_size = getenv("GLOBAL_BATCH_SIZE");
+      if (heterogeneous_range_start == NULL ||\
+          heterogeneous_range_end == NULL ||\
+          global_batch_size == NULL) {
+        return Status(error::INVALID_ARGUMENT, "Heterogeneous range start and end must be set");
+      }
+      std::stringstream s(heterogeneous_range_start);
+      std::stringstream e(heterogeneous_range_end);
+      std::stringstream bs(global_batch_size);
+      s >> heterogeneous_range_start_;
+      e >> heterogeneous_range_end_;
+      bs >> global_batch_size_;
+      if (verbose_) {
+        VLOG(0) << "Heterogeneous range = [" << heterogeneous_range_start_ <<\
+          ", " << heterogeneous_range_end_ << "), batch size = " << global_batch_size_;
+      }
+      return Status::OK();
+    }
+
+    bool verbose_;
+    bool enable_heterogeneous_;
+    int64 heterogeneous_range_start_;
+    int64 heterogeneous_range_end_;
+    int64 global_batch_size_;
     mutex mu_;
     std::unique_ptr<IteratorBase> input_impl_ TF_GUARDED_BY(mu_);
     int64 next_index_ TF_GUARDED_BY(mu_);

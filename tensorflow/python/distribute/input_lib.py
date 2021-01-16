@@ -1065,7 +1065,17 @@ class DistributedDataset(_IterableInput):
     with ops.colocate_with(dataset._variant_tensor):  # pylint: disable=protected-access
       batch_size = distribute.compute_batch_size(dataset)
 
+    # In heterogeneous mode, the dataset already batched by the number of
+    # examples assigned to this worker in each global batch, so all we need
+    # to do here is divide this per-worker batch size by the number of replicas
+    # on this worker. We can do this on each worker independently.
+    from virtual.virtual_helper import ENABLE_HETEROGENEOUS
+    if ENABLE_HETEROGENEOUS:
+      num_workers = 1
+
     def rebatch_fn(dataset, worker_index):
+      if ENABLE_HETEROGENEOUS:
+        worker_index = 0
       try:
         # pylint: disable=protected-access
         def apply_rebatch():

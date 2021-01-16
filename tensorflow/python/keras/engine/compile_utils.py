@@ -222,13 +222,14 @@ class LossesContainer(Container):
 
       # In heterogeneous training, we sum all losses and then divide by the global
       # batch size at the end. Taking local averages would lead to incorrect losses.
-      from virtual.virtual_helper import ENABLE_HETEROGENEOUS, GLOBAL_BATCH_SIZE
+      from virtual.virtual_helper import ENABLE_HETEROGENEOUS, get_global_batch_size
       if ENABLE_HETEROGENEOUS:
+        global_batch_size = get_global_batch_size()
         if loss_obj.reduction != losses_utils.ReductionV2.SUM:
           raise ValueError("Heterogeneous training requires summing losses")
-        if GLOBAL_BATCH_SIZE < 0:
+        if global_batch_size < 0:
           raise ValueError("Heterogeneous training requires setting the global batch size")
-        loss_value *= (1. / GLOBAL_BATCH_SIZE)
+        loss_value *= (1. / global_batch_size)
 
       loss_values.append(loss_value)
       loss_metric_values.append(loss_metric_value)
