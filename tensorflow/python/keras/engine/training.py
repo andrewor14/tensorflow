@@ -1197,9 +1197,10 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
       training_logs = None
 
       # Heterogeneous profiling state
-      heterogeneous_profile_batch_size = sys.maxsize
+      truncated_size = sys.maxsize
+      heterogeneous_profile_batch_size = None
       heterogeneous_profile_max_batch_size = None
-      heteogeneous_profile_steps = None
+      heterogeneous_profile_steps = None
       heterogeneous_profile_info = get_heterogeneous_profile_info()
       if heterogeneous_profile_info is not None:
         heterogeneous_profile_batch_size = heterogeneous_profile_info[0]
@@ -1262,9 +1263,15 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
                 logging.info("Heterogeneous training: now profiling for batch size %s" %\
                   heterogeneous_profile_batch_size)
                 set_heterogeneous_profile_batch_size(heterogeneous_profile_batch_size)
+                num_replicas = self._distribution_strategy.extended._num_replicas_in_sync
+                truncated_size = heterogeneous_profile_batch_size / num_replicas
+                if not truncated_size.is_integer():
+                  raise ValueError("Heterogeneous profiling encountered non-divisible " +\
+                    "batch size: %s, num replicas: %s" % (heterogeneous_profile_batch_size,\
+                    num_replicas))
+                truncated_size = int(truncated_size)
 
-              tmp_logs = self.train_function(iterator, num_virtual_nodes,\
-                heterogeneous_profile_batch_size)
+              tmp_logs = self.train_function(iterator, num_virtual_nodes, truncated_size)
               if data_handler.should_sync:
                 context.async_wait()
               logs = tmp_logs  # No error, now safe to assign to logs.
