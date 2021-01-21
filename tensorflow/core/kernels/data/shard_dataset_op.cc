@@ -125,6 +125,7 @@ class ShardDatasetOp::Dataset : public DatasetBase {
         : DatasetIterator<Dataset>(params), next_index_(0) {
       const char* verbose = getenv("SHARD_DATASET_VERBOSE");
       const char* enable_heterogeneous = getenv("ENABLE_HETEROGENEOUS");
+      verbose_ = false;
       if (verbose != NULL) {
         std::string s(verbose);
         std::transform(s.begin(), s.end(), s.begin(), [&] (char c) { return std::tolower(c); });
@@ -132,6 +133,7 @@ class ShardDatasetOp::Dataset : public DatasetBase {
           verbose_ = true;
         }
       }
+      enable_heterogeneous_ = false;
       if (enable_heterogeneous != NULL) {
         std::string s(enable_heterogeneous);
         std::transform(s.begin(), s.end(), s.begin(), [&] (char c) { return std::tolower(c); });

@@ -22,6 +22,7 @@ import copy
 import itertools
 import json
 import os
+import sys
 import warnings
 
 import six
@@ -724,7 +725,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
   def run_eagerly(self, value):
     self._run_eagerly = value
 
-  def train_step(self, data):
+  def train_step(self, data, truncated_size):
     """The logic for one training step.
 
     This method can be overridden to support custom training logic.
@@ -751,8 +752,14 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
     # data when a `tf.data.Dataset` is provided.
     data = data_adapter.expand_1d(data)
     x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
+    x = x[:truncated_size]
+    y = y[:truncated_size]
 
-    with backprop.GradientTape() as tape:
+    from virtual.virtual_helper import HETEROGENEOUS_VERBOSE
+    print_ops = []
+    if HETEROGENEOUS_VERBOSE:
+      print_ops = [tf.print("Input shape =", tf.shape(x))]
+    with backprop.GradientTape() as tape, tf.control_dependencies(print_ops):
       y_pred = self(x, training=True)
       loss = self.compiled_loss(
           y, y_pred, sample_weight, regularization_losses=self.losses)
@@ -760,7 +767,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
     self.compiled_metrics.update_state(y, y_pred, sample_weight)
     return {m.name: m.result() for m in self.metrics}
 
-  def virtual_train_step(self, iterator, num_virtual_nodes):
+  def virtual_train_step(self, iterator, num_virtual_nodes, truncated_size):
     """The logic for one training step.
 
     This method can be overridden to support custom training logic.
@@ -798,6 +805,8 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
         data = next(iterator)
         data = data_adapter.expand_1d(data)
         x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
+        x = x[:truncated_size]
+        y = y[:truncated_size]
 
         with backprop.GradientTape() as tape:
           y_pred = self(x, training=True)
@@ -873,25 +882,25 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
 
     disable_virtual_nodes = os.getenv("DISABLE_VIRTUAL_NODES", "").lower() == "true"
 
-    def step_function(model, iterator, num_virtual_nodes):
+    def step_function(model, iterator, num_virtual_nodes, truncated_size):
       """Runs a single training step."""
 
-      def run_step(data_or_iterator):
+      def run_step(data_or_iterator, truncated_size):
         if disable_virtual_nodes:
-            from absl import logging
             if num_virtual_nodes > 1:
                 raise ValueError("NUM_VIRTUAL_NODES_PER_DEVICE is set but virtual nodes is disabled")
             logging.info("Running non-virtual train step")
-            outputs = model.train_step(data_or_iterator)
+            outputs = model.train_step(data_or_iterator, truncated_size)
         else:
-            outputs = model.virtual_train_step(data_or_iterator, num_virtual_nodes)
+            outputs = model.virtual_train_step(data_or_iterator, num_virtual_nodes, truncated_size)
         # Ensure counter is updated only if `train_step` succeeds.
         with ops.control_dependencies(_minimum_control_deps(outputs)):
           model._train_counter.assign_add(1)  # pylint: disable=protected-access
         return outputs
 
-      args = next(iterator) if disable_virtual_nodes else _convert_distributed_iterator(iterator)
-      outputs = model.distribute_strategy.run(run_step, args=(args,))
+      data_or_iterator = next(iterator) if disable_virtual_nodes else\
+        _convert_distributed_iterator(iterator)
+      outputs = model.distribute_strategy.run(run_step, args=(data_or_iterator, truncated_size))
       outputs = reduce_per_replica(
           outputs, self.distribute_strategy, reduction='first')
       write_scalar_summaries(outputs, step=model._train_counter)  # pylint: disable=protected-access
@@ -899,16 +908,16 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
 
     if self._steps_per_execution.numpy().item() == 1:
 
-      def train_function(iterator, num_virtual_nodes):
+      def train_function(iterator, num_virtual_nodes, truncated_size):
         """Runs a training execution with one step."""
-        return step_function(self, iterator, num_virtual_nodes)
+        return step_function(self, iterator, num_virtual_nodes, truncated_size)
 
     else:
 
-      def train_function(iterator, num_virtual_nodes):
+      def train_function(iterator, num_virtual_nodes, truncated_size):
         """Runs a training execution with multiple steps."""
         for _ in math_ops.range(self._steps_per_execution):
-          outputs = step_function(self, iterator, num_virtual_nodes)
+          outputs = step_function(self, iterator, num_virtual_nodes, truncated_size)
         return outputs
 
     if not self.run_eagerly:
@@ -1180,16 +1189,31 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
       callbacks.on_train_begin()
 
       from virtual.elasticity_callback import ENABLE_ELASTICITY
-      from virtual.virtual_helper import NUM_VIRTUAL_NODES_PER_DEVICE
+      from virtual.virtual_helper import NUM_VIRTUAL_NODES_PER_DEVICE,\
+        get_input_context, get_heterogeneous_profile_info,\
+        set_heterogeneous_profile_batch_size
       resized = False
       num_virtual_nodes = int(os.getenv(NUM_VIRTUAL_NODES_PER_DEVICE) or 1)
       training_logs = None
+
+      # Heterogeneous profiling state
+      heterogeneous_profile_batch_size = sys.maxsize
+      heterogeneous_profile_max_batch_size = None
+      heteogeneous_profile_steps = None
+      heterogeneous_profile_info = get_heterogeneous_profile_info()
+      if heterogeneous_profile_info is not None:
+        heterogeneous_profile_batch_size = heterogeneous_profile_info[0]
+        heterogeneous_profile_max_batch_size = heterogeneous_profile_info[1]
+        heterogeneous_profile_steps = heterogeneous_profile_info[2]
+        set_heterogeneous_profile_batch_size(heterogeneous_profile_batch_size)
+
       # Handle fault-tolerance for multi-worker.
       # TODO(omalleyt): Fix the ordering issues that mean this has to
       # happen after `callbacks.on_train_begin`.
       data_handler._initial_epoch = (  # pylint: disable=protected-access
           self._maybe_load_initial_epoch_from_ckpt(initial_epoch))
       logs = None
+      global_step = 0
       for epoch, iterator in data_handler.enumerate_epochs():
         self.reset_metrics()
         callbacks.on_epoch_begin(epoch)
@@ -1205,7 +1229,6 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
 
               # Handle cluster configuration changes if elasticity is enabled
               if ENABLE_ELASTICITY:
-                from absl import logging
                 from virtual.elasticity_callback import\
                   NUM_VIRTUAL_NODES, START_BATCH, START_EPOCH
                 if NUM_VIRTUAL_NODES is not None:
@@ -1225,12 +1248,29 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
                   os.environ[NUM_VIRTUAL_NODES_PER_DEVICE] = str(NUM_VIRTUAL_NODES)
                   resized = True
 
-              tmp_logs = self.train_function(iterator, num_virtual_nodes)
+              # Update heterogeneous profile state
+              if heterogeneous_profile_steps is not None and\
+                  global_step % heterogeneous_profile_steps == 0:
+                if heterogeneous_profile_batch_size == heterogeneous_profile_max_batch_size:
+                  logging.info("Heterogeneous training profile complete")
+                  self.stop_training = True
+                  break
+                if global_step > 0:
+                  heterogeneous_profile_batch_size = min(\
+                    heterogeneous_profile_batch_size * 2,\
+                    heterogeneous_profile_max_batch_size)
+                logging.info("Heterogeneous training: now profiling for batch size %s" %\
+                  heterogeneous_profile_batch_size)
+                set_heterogeneous_profile_batch_size(heterogeneous_profile_batch_size)
+
+              tmp_logs = self.train_function(iterator, num_virtual_nodes,\
+                heterogeneous_profile_batch_size)
               if data_handler.should_sync:
                 context.async_wait()
               logs = tmp_logs  # No error, now safe to assign to logs.
               end_step = step + data_handler.step_increment
               callbacks.on_train_batch_end(end_step, logs)
+              global_step += 1
               if self.stop_training:
                 break
 
@@ -1277,8 +1317,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
 
         # Reshard the data if we resized in this epoch
         if resized and dynamic_input_fn is not None:
-          from virtual import virtual_helper
-          input_context = virtual_helper.get_input_context()
+          input_context = get_input_context()
           dataset = dynamic_input_fn(input_context)
           dataset = self.distribute_strategy.experimental_distribute_dataset(dataset)
           data_handler._dataset = dataset
@@ -1401,7 +1440,6 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
 
       def run_step(data_or_iterator):
         if disable_virtual_nodes:
-          from absl import logging
           if num_virtual_nodes > 1:
               raise ValueError("NUM_VIRTUAL_NODES_PER_DEVICE is set but virtual nodes is disabled")
           logging.info("Running non-virtual test step")
