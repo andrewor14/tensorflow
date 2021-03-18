@@ -1188,25 +1188,16 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
       self._train_counter.assign(0)
       callbacks.on_train_begin()
 
+      # VirtualFlow state
       from virtual.elasticity_callback import ENABLE_ELASTICITY
       from virtual.virtual_helper import NUM_VIRTUAL_NODES_PER_DEVICE,\
-        get_input_context, get_heterogeneous_profile_info,\
-        set_heterogeneous_profile_batch_size
+        get_input_context, ENABLE_HETEROGENEOUS_PROFILE,\
+        get_heterogeneous_profile_steps, next_heterogeneous_profile_batch_size
       resized = False
       num_virtual_nodes = int(os.getenv(NUM_VIRTUAL_NODES_PER_DEVICE) or 1)
       training_logs = None
-
-      # Heterogeneous profiling state
       truncated_size = sys.maxsize
-      heterogeneous_profile_batch_size = None
-      heterogeneous_profile_max_batch_size = None
-      heterogeneous_profile_steps = None
-      heterogeneous_profile_info = get_heterogeneous_profile_info()
-      if heterogeneous_profile_info is not None:
-        heterogeneous_profile_batch_size = heterogeneous_profile_info[0]
-        heterogeneous_profile_max_batch_size = heterogeneous_profile_info[1]
-        heterogeneous_profile_steps = heterogeneous_profile_info[2]
-        set_heterogeneous_profile_batch_size(heterogeneous_profile_batch_size)
+      heterogeneous_profile_steps = get_heterogeneous_profile_steps()
 
       # Handle fault-tolerance for multi-worker.
       # TODO(omalleyt): Fix the ordering issues that mean this has to
@@ -1250,21 +1241,15 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
                   resized = True
 
               # Update heterogeneous profile state
-              if heterogeneous_profile_steps is not None and\
-                  global_step % heterogeneous_profile_steps == 0:
-                if heterogeneous_profile_batch_size == heterogeneous_profile_max_batch_size:
-                  logging.info("Heterogeneous training profile complete")
+              if ENABLE_HETEROGENEOUS_PROFILE and global_step % heterogeneous_profile_steps == 0:
+                truncated_size = next_heterogeneous_profile_batch_size()
+                if truncated_size < 0:
+                  logging.info("Heterogeneous profiling complete")
                   self.stop_training = True
                   break
-                if global_step > 0:
-                  heterogeneous_profile_batch_size = min(\
-                    heterogeneous_profile_batch_size * 2,\
-                    heterogeneous_profile_max_batch_size)
-                logging.info("Heterogeneous training: now profiling for batch size %s" %\
-                  heterogeneous_profile_batch_size)
-                set_heterogeneous_profile_batch_size(heterogeneous_profile_batch_size)
+                logging.info("Heterogeneous profiling: now profiling batch size %s" % truncated_size)
                 num_replicas = self._distribution_strategy.extended._num_replicas_in_sync
-                truncated_size = heterogeneous_profile_batch_size / num_replicas
+                truncated_size /= num_replicas
                 if not truncated_size.is_integer():
                   raise ValueError("Heterogeneous profiling encountered non-divisible " +\
                     "batch size: %s, num replicas: %s" % (heterogeneous_profile_batch_size,\
