@@ -725,6 +725,54 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
   def run_eagerly(self, value):
     self._run_eagerly = value
 
+  def _truncate_input(self, data, length):
+    """
+    Truncate the input data, which can a tensor or a nested structure of tensors.
+    If the target length is -1, then the original data will be returned.
+    """
+    if data is None or length < 0:
+      return data
+    if isinstance(data, dict):
+      for k, v in data.items():
+        if isinstance(v, tf.Tensor):
+          data[k] = v[:length]
+    elif isinstance(data, tuple) or isinstance(data, list):
+      new_data = list(data)
+      for i, d in enumerate(new_data):
+        if isinstance(d, tf.Tensor):
+          new_data[i] = d[:length]
+      if isinstance(data, tuple):
+        new_data = tuple(new_data)
+      data = new_data
+    elif isinstance(data, tf.Tensor):
+      data = data[:length]
+    else:
+      logging.warn("Unable to truncate input of type %s" % type(data))
+    return data
+
+  def _get_input_shape(self, data):
+    """
+    Return the shape of the input data, which can be a tensor or a nested structure
+    of tensors. The return value will be the same type as the original data.
+    """
+    if data is None:
+      return None
+    if isinstance(data, dict):
+      shapes = {}
+      for k, v in data.items():
+        if isinstance(v, tf.Tensor):
+          shapes[k] = tf.shape(v)
+      return shapes
+    if isinstance(data, tuple) or isinstance(data, list):
+      shapes = [tf.shape(d) for d in data if isinstance(d, tf.Tensor)]
+      if isinstance(data, tuple):
+        shapes = tuple(shapes)
+      return shapes
+    if isinstance(data, tf.Tensor):
+      return tf.shape(data)
+    logging.warn("Unable to get the shape of type %s" % type(data))
+    return None
+
   def train_step(self, data, truncated_size):
     """The logic for one training step.
 
@@ -752,13 +800,13 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
     # data when a `tf.data.Dataset` is provided.
     data = data_adapter.expand_1d(data)
     x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
-    x = x[:truncated_size]
-    y = y[:truncated_size]
+    x = self._truncate_input(x, truncated_size)
+    y = self._truncate_input(y, truncated_size)
 
     from virtual.virtual_helper import HETEROGENEOUS_VERBOSE
     print_ops = []
     if HETEROGENEOUS_VERBOSE:
-      print_ops = [tf.print("Input shape =", tf.shape(x))]
+      print_ops = [tf.print("Input shape =", self._get_input_shape(x))]
     with backprop.GradientTape() as tape, tf.control_dependencies(print_ops):
       y_pred = self(x, training=True)
       loss = self.compiled_loss(
@@ -805,8 +853,8 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
         data = next(iterator)
         data = data_adapter.expand_1d(data)
         x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
-        x = x[:truncated_size]
-        y = y[:truncated_size]
+        x = self._truncate_input(x, truncated_size)
+        y = self._truncate_input(y, truncated_size)
 
         with backprop.GradientTape() as tape:
           y_pred = self(x, training=True)
@@ -1196,7 +1244,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
       resized = False
       num_virtual_nodes = int(os.getenv(NUM_VIRTUAL_NODES_PER_DEVICE) or 1)
       training_logs = None
-      truncated_size = sys.maxsize
+      truncated_size = -1
       heterogeneous_profile_steps = get_heterogeneous_profile_steps()
 
       # Handle fault-tolerance for multi-worker.
