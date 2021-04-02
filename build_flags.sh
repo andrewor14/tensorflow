@@ -71,7 +71,7 @@ elif [[ "$ENVIRONMENT" == "snsgpu" ]]; then
   # Note: disabled because of https://github.com/tensorflow/tensorflow/issues/30703
   export TF_NEED_MPI=0
   export MPI_HOME="/usr/local"
-  export TF_PKG_DIR="/home/andrew/Documents/dev/tf-docker"
+  export TF_PKG_DIR="/home/andrew/Documents/dev/tf-wheel"
   export PIP_COMMAND="pip3"
 else
   echo "ERROR: Unknown environment '$ENVIRONMENT'"
