@@ -170,13 +170,13 @@ class ShardDatasetOp::Dataset : public DatasetBase {
         // is split unevenly among three workers according to this ratio 12:3:2. The
         // range for the second worker will be [12,15), which means we will skip over
         // all data outside this range.
-        int i = next_index_ % global_batch_size_;
+        int i = next_index_ % heterogeneous_range_total_;
         if (i == 0) {
           num_to_skip = heterogeneous_range_start_;
         } else if (heterogeneous_range_start_ <= i && i < heterogeneous_range_end_) {
           num_to_skip = 0;
         } else if (i == heterogeneous_range_end_) {
-          num_to_skip = global_batch_size_ -\
+          num_to_skip = heterogeneous_range_total_ -\
             (heterogeneous_range_end_ - heterogeneous_range_start_);
         } else {
           std::stringstream s;
@@ -287,21 +287,21 @@ class ShardDatasetOp::Dataset : public DatasetBase {
     Status InitializeHeterogeneous() {
       const char* heterogeneous_range_start = getenv("HETEROGENEOUS_RANGE_START");
       const char* heterogeneous_range_end = getenv("HETEROGENEOUS_RANGE_END");
-      const char* global_batch_size = getenv("GLOBAL_BATCH_SIZE");
+      const char* heterogeneous_range_total = getenv("HETEROGENEOUS_RANGE_TOTAL");
       if (heterogeneous_range_start == NULL ||\
           heterogeneous_range_end == NULL ||\
-          global_batch_size == NULL) {
+          heterogeneous_range_total == NULL) {
         return Status(error::INVALID_ARGUMENT, "Heterogeneous range start and end must be set");
       }
       std::stringstream s(heterogeneous_range_start);
       std::stringstream e(heterogeneous_range_end);
-      std::stringstream bs(global_batch_size);
+      std::stringstream bs(heterogeneous_range_total);
       s >> heterogeneous_range_start_;
       e >> heterogeneous_range_end_;
-      bs >> global_batch_size_;
+      bs >> heterogeneous_range_total_;
       if (verbose_) {
         VLOG(0) << "Heterogeneous range = [" << heterogeneous_range_start_ <<\
-          ", " << heterogeneous_range_end_ << "), batch size = " << global_batch_size_;
+          ", " << heterogeneous_range_end_ << "), range total = " << heterogeneous_range_total_;
       }
       return Status::OK();
     }
@@ -310,7 +310,7 @@ class ShardDatasetOp::Dataset : public DatasetBase {
     bool enable_heterogeneous_;
     int64 heterogeneous_range_start_;
     int64 heterogeneous_range_end_;
-    int64 global_batch_size_;
+    int64 heterogeneous_range_total_;
     mutex mu_;
     std::unique_ptr<IteratorBase> input_impl_ TF_GUARDED_BY(mu_);
     int64 next_index_ TF_GUARDED_BY(mu_);
