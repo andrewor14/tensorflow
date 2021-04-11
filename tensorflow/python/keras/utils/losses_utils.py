@@ -283,12 +283,12 @@ def scale_loss_for_distribution(loss_value):
 
   """
   from virtual.virtual_helper import ENABLE_HETEROGENEOUS, HETEROGENEOUS_VERBOSE,\
-    NUM_GPUS, get_global_batch_size, get_heterogeneous_batch_size
+    HETEROGENEOUS_BASELINE, NUM_GPUS, get_global_batch_size, get_heterogeneous_batch_size
   # In heterogeneous mode, each device may be assigned different amounts of data, so we
   # need to scale the loss on each device differently so the gradient synchronization
   # that follows later will be a weighted average rather than just a simple average.
   # The scaling factor is simply how much of the batch this device is assigned.
-  if ENABLE_HETEROGENEOUS:
+  if ENABLE_HETEROGENEOUS and not HETEROGENEOUS_BASELINE:
     from absl import logging
     scale_factor = get_heterogeneous_batch_size() / get_global_batch_size()
     scale_factor /= int(os.getenv(NUM_GPUS, 1))
