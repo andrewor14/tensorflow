@@ -18,6 +18,8 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import os
+
 from tensorflow.python.distribute import distribution_strategy_context
 from tensorflow.python.framework import ops
 from tensorflow.python.keras import backend as K
@@ -276,12 +278,32 @@ def compute_weighted_loss(losses,
 
 
 def scale_loss_for_distribution(loss_value):
-  """Scales and returns the given loss value by the number of replicas."""
-  num_replicas = (
-      distribution_strategy_context.get_strategy().num_replicas_in_sync)
-  if num_replicas > 1:
-    loss_value *= (1. / num_replicas)
-  return loss_value
+  """
+  Scale the given loss value by how much of the batch this device is assigned.
+
+  """
+  from virtual.virtual_helper import ENABLE_HETEROGENEOUS, HETEROGENEOUS_VERBOSE,\
+    NUM_GPUS, get_global_batch_size, get_heterogeneous_batch_size
+  # In heterogeneous mode, each device may be assigned different amounts of data, so we
+  # need to scale the loss on each device differently so the gradient synchronization
+  # that follows later will be a weighted average rather than just a simple average.
+  # The scaling factor is simply how much of the batch this device is assigned.
+  if ENABLE_HETEROGENEOUS:
+    from absl import logging
+    scale_factor = get_heterogeneous_batch_size() / get_global_batch_size()
+    scale_factor /= int(os.getenv(NUM_GPUS, 1))
+    loss_value *= scale_factor
+    if HETEROGENEOUS_VERBOSE:
+      logging.info("Heterogeneous mode is enabled: scaling loss by %s instead" %\
+        scale_factor)
+    return loss_value
+  else:
+    # Otherwise, just divide by the total number of replicas in the system
+    num_replicas = (
+        distribution_strategy_context.get_strategy().num_replicas_in_sync)
+    if num_replicas > 1:
+      loss_value *= (1. / num_replicas)
+    return loss_value
 
 
 def cast_losses_to_common_dtype(losses):

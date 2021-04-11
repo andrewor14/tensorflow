@@ -220,17 +220,6 @@ class LossesContainer(Container):
           loss_obj.reduction == losses_utils.ReductionV2.AUTO):
         loss_value = losses_utils.scale_loss_for_distribution(loss_value)
 
-      # In heterogeneous training, we sum all losses and then divide by the global
-      # batch size at the end. Taking local averages would lead to incorrect losses.
-      from virtual.virtual_helper import ENABLE_HETEROGENEOUS, get_global_batch_size
-      if ENABLE_HETEROGENEOUS:
-        global_batch_size = get_global_batch_size()
-        if loss_obj.reduction != losses_utils.ReductionV2.SUM:
-          raise ValueError("Heterogeneous training requires summing losses")
-        if global_batch_size < 0:
-          raise ValueError("Heterogeneous training requires setting the global batch size")
-        loss_value *= (1. / global_batch_size)
-
       loss_values.append(loss_value)
       loss_metric_values.append(loss_metric_value)
 
@@ -275,14 +264,6 @@ class LossesContainer(Container):
       loss_name = loss.__name__
       loss = losses_mod.LossFunctionWrapper(loss, name=loss_name)
     loss._allow_sum_over_batch_size = True  # pylint: disable=protected-access
-
-    # In heterogeneous training, do not divide loss by local batch size
-    from virtual.virtual_helper import ENABLE_HETEROGENEOUS
-    from absl import logging
-    if ENABLE_HETEROGENEOUS:
-      if loss.reduction != losses_utils.ReductionV2.SUM:
-        logging.warning("Overriding loss reduction to SUM for heterogeneous training")
-      loss.reduction = losses_utils.ReductionV2.SUM
     return loss
 
   def _should_broadcast(self, obj):

@@ -895,18 +895,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
     # Apply aggregated gradients
     print_ops = []
     for j in range(len(aggregated_gradients)):
-      # In non-heterogeneous mode, we first take the average of the local gradients across the
-      # virtual nodes on this device, and then average these local averages across all devices
-      # in the cluster. As long as the number of virtual nodes on each device is the same, this
-      # will be equivalent to taking a simple average across all the virtual nodes.
-      #
-      # In heterogeneous mode, however, we first take the _sum_ of the local gradients instead,
-      # then _sum_ these local sums across all devices in the cluster. We do this instead because
-      # the local losses (and thus gradients) were already divided by the global batch size.
-      # Therefore, we do not need to divide the aggregated gradients by the number of virtual nodes.
-      from virtual.virtual_helper import ENABLE_HETEROGENEOUS
-      if not ENABLE_HETEROGENEOUS:
-        aggregated_gradients[j] /= num_virtual_nodes
+      aggregated_gradients[j] /= num_virtual_nodes
       from virtual.elasticity_callback import ELASTICITY_VERBOSE
       if ELASTICITY_VERBOSE and j == 0:
         print_ops = [tf.print("The first gradient is", tf.reshape(aggregated_gradients[j], [-1])[:5])]
