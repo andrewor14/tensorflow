@@ -19,6 +19,7 @@ from __future__ import division
 from __future__ import print_function
 
 import copy
+import os
 import threading
 import time
 import weakref
@@ -301,7 +302,7 @@ class CollectiveAllReduceExtended(mirrored_strategy.MirroredExtended):
   # Whether to perdically check the health of the cluster. If any worker is not
   # reachable, collectives are aborted and the user program should get a
   # tf.errors.UnavailableError. It's required to restart in order to recover.
-  _enable_check_health = True
+  _enable_check_health = os.getenv("ENABLE_CHECK_HEALTH", "true").lower() == "true"
   # Check health interval in seconds.
   _check_health_interval = 30
   # Timeout in seconds for the first check health. The first check health needs
