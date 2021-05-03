@@ -796,23 +796,75 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
       values of the `Model`'s metrics are returned. Example:
       `{'loss': 0.2, 'accuracy': 0.7}`.
     """
-    # These are the only transformations `Model.fit` applies to user-input
-    # data when a `tf.data.Dataset` is provided.
-    data = data_adapter.expand_1d(data)
-    x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
-    x = self._truncate_input(x, truncated_size)
-    y = self._truncate_input(y, truncated_size)
+    ## These are the only transformations `Model.fit` applies to user-input
+    ## data when a `tf.data.Dataset` is provided.
+    #data = data_adapter.expand_1d(data)
+    #x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
+    #x = self._truncate_input(x, truncated_size)
+    #y = self._truncate_input(y, truncated_size)
 
-    from virtual.virtual_helper import HETEROGENEOUS_VERBOSE
-    print_ops = []
-    if HETEROGENEOUS_VERBOSE:
-      print_ops = [tf.print("Input shape =", self._get_input_shape(x))]
-    with backprop.GradientTape() as tape, tf.control_dependencies(print_ops):
-      y_pred = self(x, training=True)
-      loss = self.compiled_loss(
-          y, y_pred, sample_weight, regularization_losses=self.losses)
-    self.optimizer.minimize(loss, self.trainable_variables, tape=tape)
-    self.compiled_metrics.update_state(y, y_pred, sample_weight)
+    #from virtual.virtual_helper import HETEROGENEOUS_VERBOSE
+    #print_ops = []
+    #if HETEROGENEOUS_VERBOSE:
+    #  print_ops = [tf.print("Input shape =", self._get_input_shape(x))]
+    #with backprop.GradientTape() as tape, tf.control_dependencies(print_ops):
+    #  y_pred = self(x, training=True)
+    #  loss = self.compiled_loss(
+    #      y, y_pred, sample_weight, regularization_losses=self.losses)
+    #self.optimizer.minimize(loss, self.trainable_variables, tape=tape)
+    #self.compiled_metrics.update_state(y, y_pred, sample_weight)
+    #return {m.name: m.result() for m in self.metrics}
+
+    def while_cond(i, grads):
+      return i < 1
+    def while_body(i, grads):
+      # Ensure we have finished running the previous virtual node before proceeding
+      print_op = tf.print("Training on NON NON NON virtual node")
+      with tf.control_dependencies([print_op]):
+        # These are the only transformations `Model.fit` applies to user-input
+        # data when a `tf.data.Dataset` is provided. These utilities will be exposed
+        # publicly.
+        _data = data_adapter.expand_1d(data)
+        x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(_data)
+        x = self._truncate_input(x, truncated_size)
+        y = self._truncate_input(y, truncated_size)
+
+        with backprop.GradientTape() as tape:
+          y_pred = self(x, training=True)
+          loss = self.compiled_loss(
+              y, y_pred, sample_weight, regularization_losses=self.losses)
+        grads_and_vars = self.optimizer._compute_gradients(
+            loss, self.trainable_variables, tape=tape)
+        gradients = [g for (g, _) in grads_and_vars]
+
+        # Convert all IndexedSlices to dense tensors
+        # TODO: find a more efficient way to handle this
+        for j, grad in enumerate(gradients):
+          if isinstance(grad, tf.IndexedSlices):
+            gradients[j] = tf.convert_to_tensor(grad)
+
+        ## Aggregate gradients across virtual nodes
+        ## We sum them here and divide them later
+        #if len(aggregated_gradients) != len(gradients):
+        #  raise ValueError("Wrong number of gradients %s, expected %s" %\
+        #    (len(gradients), len(aggregated_gradients)))
+        #for j in range(len(gradients)):
+        #  aggregated_gradients[j] += gradients[j]
+
+        self.compiled_metrics.update_state(y, y_pred, sample_weight)
+        return (i+1, gradients)
+
+    # We use tf.while_loop here instead of autograph because of this issue:
+    # https://github.com/tensorflow/tensorflow/issues/33308
+    # For the initial arguments, we create a set of tensors with the same shape as the
+    # trainable variables, assuming that these shapes match the shapes of the gradients.
+    # This is a requirement of tf.while_loop, that the initial arguments must have the
+    # same shapes as the return values of the body function.
+    _, gradients = tf.while_loop(
+      while_cond,
+      while_body,
+      (0, [tf.zeros(shape=v.shape, dtype=v.dtype) for v in self.trainable_variables]))
+    self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
     return {m.name: m.result() for m in self.metrics}
 
   def virtual_train_step(self, iterator, num_virtual_nodes, truncated_size):
